@@ -361,3 +361,8 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+# Local SQLite database (created by `dotnet ef database update`, contains local app + Identity data)
+*.db
+*.db-shm
+*.db-wal

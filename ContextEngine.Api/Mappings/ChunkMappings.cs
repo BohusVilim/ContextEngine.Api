@@ -67,7 +67,7 @@ namespace ContextEngine.Api.Mappings
                     // Read from the Parent navigation property rather than chunk.ParentId directly,
                     // so this stays null unless the caller has loaded Parent (e.g. via Include).
                     ParentId = chunk.Parent?.Id,
-                    // Embedding is deliberately NOT copied onto the DTO: it's a 128-number array that
+                    // Embedding is deliberately NOT copied onto the DTO: it's a 384-number array that
                     // only has meaning as ranking input to SearchService, so shipping it in every API
                     // response would just be dead weight for callers.
                     Metadata = chunk.Metadata,
