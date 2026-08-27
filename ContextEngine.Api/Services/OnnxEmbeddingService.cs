@@ -40,14 +40,14 @@ namespace ContextEngine.Api.Services
         }
 
         /// <inheritdoc/>
-        public async Task<float[]> CreateEmbeddingAsync(string? text)
+        public async Task<float[]> CreateEmbeddingAsync(string? text, CancellationToken cancellationToken = default)
         {
             if (string.IsNullOrWhiteSpace(text))
             {
                 return new float[Dimensions];
             }
 
-            var vector = await _generator.GenerateVectorAsync(text);
+            var vector = await _generator.GenerateVectorAsync(text, cancellationToken: cancellationToken);
             return vector.ToArray();
         }
 

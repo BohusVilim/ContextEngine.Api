@@ -15,8 +15,9 @@ namespace ContextEngine.Api.Services.Interfaces
         /// the same idea per document.
         /// </summary>
         /// <param name="chunks">Every chunk parsed from the document, in document order.</param>
+        /// <param name="cancellationToken">Propagated to the underlying Anthropic API call.</param>
         /// <returns>Document-level topics, or an empty list if the document has no content.</returns>
-        Task<List<string>> CreateTopicsAsync(List<CreateChunkDto> chunks);
+        Task<List<string>> CreateTopicsAsync(List<CreateChunkDto> chunks, CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Generates tags for each chunk, with the full document given as context so tags can
@@ -27,10 +28,11 @@ namespace ContextEngine.Api.Services.Interfaces
         /// per document.
         /// </summary>
         /// <param name="chunks">Every chunk parsed from the document, in document order.</param>
+        /// <param name="cancellationToken">Propagated to the underlying Anthropic API call.</param>
         /// <returns>
         /// Tags per chunk, in the same order and count as <paramref name="chunks"/>
         /// (<c>result[i]</c> are the tags for <c>chunks[i]</c>).
         /// </returns>
-        Task<List<List<string>>> CreateTagsAsync(List<CreateChunkDto> chunks);
+        Task<List<List<string>>> CreateTagsAsync(List<CreateChunkDto> chunks, CancellationToken cancellationToken = default);
     }
 }

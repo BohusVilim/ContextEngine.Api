@@ -51,6 +51,12 @@ namespace ContextEngine.Api
                 title = "File not found.";
                 detail = exception.Message;
             }
+            else if (exception is UnauthorizedAccessException)
+            {
+                statusCode = StatusCodes.Status403Forbidden;
+                title = "Access to the requested path is not allowed.";
+                detail = exception.Message;
+            }
             else
             {
                 // Unrecognized exceptions are treated as internal errors. The message is deliberately

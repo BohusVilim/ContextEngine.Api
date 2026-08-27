@@ -30,20 +30,20 @@ namespace ContextEngine.Api.Services
         }
 
         /// <inheritdoc/>
-        public async Task<SearchableOptionsResponse> GetSearchableOptionsAsync()
+        public async Task<SearchableOptionsResponse> GetSearchableOptionsAsync(CancellationToken cancellationToken = default)
         {
             // Type is a plain scalar column, so distinct values can be resolved in SQL.
             var types = await _context.Chunks
                 .Select(c => c.Type)
                 .Distinct()
-                .ToListAsync();
+                .ToListAsync(cancellationToken);
 
             // Topics/Tags are stored as JSON text columns (see ContextEngineDbContext), so they
             // can't be flattened/deduplicated at the SQL level; every chunk has to be loaded and
             // flattened in memory.
             var topicsAndTags = await _context.Chunks
                 .Select(c => new { c.Topics, c.Tags })
-                .ToListAsync();
+                .ToListAsync(cancellationToken);
 
             return new SearchableOptionsResponse
             {
@@ -54,7 +54,7 @@ namespace ContextEngine.Api.Services
         }
 
         /// <inheritdoc/>
-        public async Task<SearchResponse> SearchAsync(SearchRequest searchRequest)
+        public async Task<SearchResponse> SearchAsync(SearchRequest searchRequest, CancellationToken cancellationToken = default)
         {
             // Type is a plain scalar column, so it can be filtered at the SQL level. Topics/Tags
             // (JSON text columns - see ContextEngineDbContext) can't be, so every chunk surviving the
@@ -65,7 +65,7 @@ namespace ContextEngine.Api.Services
                 typeFilteredQuery = typeFilteredQuery.Where(c => searchRequest.Types.Contains(c.Type));
             }
 
-            var candidates = await typeFilteredQuery.Include(c => c.Parent).ToListAsync();
+            var candidates = await typeFilteredQuery.Include(c => c.Parent).ToListAsync(cancellationToken);
 
             // A chunk matches if it has at least one of the requested topics/tags (OR, not AND) -
             // requiring every one of them would make adding an extra filter value only ever narrow
@@ -80,7 +80,7 @@ namespace ContextEngine.Api.Services
                 candidates = candidates.Where(c => searchRequest.Tags.Any(tag => c.Tags.Contains(tag))).ToList();
             }
 
-            var rankedChunks = await RankByRelevanceAsync(candidates, searchRequest.Query);
+            var rankedChunks = await RankByRelevanceAsync(candidates, searchRequest.Query, cancellationToken);
 
             return new SearchResponse { Chunks = _chunkMappings.MapChunksToDtos(rankedChunks) };
         }
@@ -91,14 +91,14 @@ namespace ContextEngine.Api.Services
         /// meaningful embedding to rank against, so in that case the candidates are simply truncated
         /// in their existing (storage) order instead of being scored.
         /// </summary>
-        private async Task<List<Chunk>> RankByRelevanceAsync(List<Chunk> candidates, string query)
+        private async Task<List<Chunk>> RankByRelevanceAsync(List<Chunk> candidates, string query, CancellationToken cancellationToken)
         {
             if (string.IsNullOrWhiteSpace(query))
             {
                 return candidates.Take(MaxResults).ToList();
             }
 
-            var queryEmbedding = await _embeddingService.CreateEmbeddingAsync(query);
+            var queryEmbedding = await _embeddingService.CreateEmbeddingAsync(query, cancellationToken);
 
             return candidates
                 .Select(chunk => (Chunk: chunk, Relevance: _embeddingService.CosineSimilarity(queryEmbedding, chunk.Embedding)))

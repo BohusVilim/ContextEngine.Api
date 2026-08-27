@@ -163,11 +163,11 @@ namespace ContextEngine.Api.Tests.Unit.Parsers
         {
             var mock = new Mock<IAiHelper>();
 
-            mock.Setup(a => a.CreateTopicsAsync(It.IsAny<List<CreateChunkDto>>()))
+            mock.Setup(a => a.CreateTopicsAsync(It.IsAny<List<CreateChunkDto>>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(new List<string>());
 
-            mock.Setup(a => a.CreateTagsAsync(It.IsAny<List<CreateChunkDto>>()))
-                .ReturnsAsync((List<CreateChunkDto> chunks) =>
+            mock.Setup(a => a.CreateTagsAsync(It.IsAny<List<CreateChunkDto>>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync((List<CreateChunkDto> chunks, CancellationToken _) =>
                 {
                     var tags = new List<List<string>>();
                     foreach (var chunk in chunks)

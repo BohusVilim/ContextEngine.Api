@@ -27,6 +27,7 @@ namespace ContextEngine.Api.Services.Interfaces
         /// query at search time (see <see cref="SearchService"/>).
         /// </summary>
         /// <param name="text">Text to embed, e.g. a chunk's content or a search query. May be null or blank.</param>
+        /// <param name="cancellationToken">Propagated to the underlying ONNX inference call.</param>
         /// <returns>
         /// A task producing an embedding vector of length <see cref="OnnxEmbeddingService.Dimensions"/>,
         /// or an all-zero vector of that same length if <paramref name="text"/> is null or blank —
@@ -34,7 +35,7 @@ namespace ContextEngine.Api.Services.Interfaces
         /// against everything via <see cref="CosineSimilarity"/> rather than needing special-case
         /// handling by callers.
         /// </returns>
-        Task<float[]> CreateEmbeddingAsync(string? text);
+        Task<float[]> CreateEmbeddingAsync(string? text, CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Measures how similar two embedding vectors are, as the cosine of the angle between them —

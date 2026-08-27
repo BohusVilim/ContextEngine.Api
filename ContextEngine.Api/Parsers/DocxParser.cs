@@ -32,18 +32,19 @@ namespace ContextEngine.Api.Parsers
         /// under the most recent heading at the time it was encountered, and a heading is nested under
         /// the most recent heading of a strictly lower level (so "Heading2" nests under the preceding
         /// "Heading1", and a new "Heading1" closes out any open "Heading2"/etc. and becomes a
-        /// top-level sibling) - see <see cref="BuildAncestry"/>. Topics (document-wide) and tags
+        /// top-level sibling) - see <see cref="HeadingAncestry.BuildParentId"/>. Topics (document-wide) and tags
         /// (per chunk) are then filled in by <see cref="IAiHelper"/>.
         /// </summary>
         /// <param name="filePath">Path to the .docx file to parse.</param>
+        /// <param name="cancellationToken">Propagated to the AI calls this parser makes internally (see <see cref="IAiHelper"/>).</param>
         /// <returns>Chunks in document order, ready to be mapped and persisted.</returns>
-        public async Task<List<CreateChunkDto>> ParseAsync(string filePath)
+        public async Task<List<CreateChunkDto>> ParseAsync(string filePath, CancellationToken cancellationToken = default)
         {
             var chunks = new List<CreateChunkDto>();
             var order = 0;
 
             // Headings currently open above the chunk being processed, outermost first - e.g. while
-            // inside "1.1", this holds ["1" (level 1), "1.1" (level 2)]. See BuildAncestry.
+            // inside "1.1", this holds ["1" (level 1), "1.1" (level 2)]. See HeadingAncestry.BuildParentId.
             var ancestors = new Stack<(int Level, Guid Id)>();
 
             using var document = WordprocessingDocument.Open(filePath, false);
@@ -69,7 +70,7 @@ namespace ContextEngine.Api.Parsers
                     if (IsHeadingStyle(styleId))
                     {
                         var level = GetHeadingLevel(styleId);
-                        var parentId = BuildAncestry(ancestors, level);
+                        var parentId = HeadingAncestry.BuildParentId(ancestors, level);
                         var headingId = Guid.NewGuid();
 
                         chunks.Add(new CreateChunkDto
@@ -102,13 +103,13 @@ namespace ContextEngine.Api.Parsers
             }
 
             // Topics apply to the whole document, so the same list is copied onto every chunk.
-            var topics = await _aiHelper.CreateTopicsAsync(chunks);
+            var topics = await _aiHelper.CreateTopicsAsync(chunks, cancellationToken);
             foreach (var chunk in chunks)
             {
                 chunk.Topics = topics;
             }
 
-            var tags = await _aiHelper.CreateTagsAsync(chunks);
+            var tags = await _aiHelper.CreateTagsAsync(chunks, cancellationToken);
             for (var i = 0; i < chunks.Count; i++)
             {
                 chunks[i].Tags = tags[i];
@@ -169,25 +170,6 @@ namespace ContextEngine.Api.Parsers
         {
             var digits = new string((styleId ?? string.Empty).Where(char.IsDigit).ToArray());
             return digits.Length > 0 && int.TryParse(digits, out var level) ? level : 1;
-        }
-
-        /// <summary>
-        /// Pops any open heading whose level is not strictly less than <paramref name="level"/> - e.g.
-        /// hitting a new "Heading2" closes out the previous "Heading2" (same level: it's a sibling, not
-        /// a child) but leaves an enclosing "Heading1" open (lower level: still an ancestor) - then
-        /// returns what remains on top as the new heading's parent.
-        /// </summary>
-        /// <param name="ancestors">Open headings, outermost first; mutated in place.</param>
-        /// <param name="level">Outline level of the heading about to be added.</param>
-        /// <returns>Id of the heading <paramref name="level"/> should nest under, or null if it belongs at the top.</returns>
-        private static Guid? BuildAncestry(Stack<(int Level, Guid Id)> ancestors, int level)
-        {
-            while (ancestors.Count > 0 && ancestors.Peek().Level >= level)
-            {
-                ancestors.Pop();
-            }
-
-            return ancestors.Count > 0 ? ancestors.Peek().Id : null;
         }
     }
 }

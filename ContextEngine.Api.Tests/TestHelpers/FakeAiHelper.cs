@@ -10,13 +10,13 @@ namespace ContextEngine.Api.Tests.TestHelpers
     public class FakeAiHelper : IAiHelper
     {
         /// <inheritdoc/>
-        public Task<List<string>> CreateTopicsAsync(List<CreateChunkDto> chunks)
+        public Task<List<string>> CreateTopicsAsync(List<CreateChunkDto> chunks, CancellationToken cancellationToken = default)
         {
             return Task.FromResult(new List<string>());
         }
 
         /// <inheritdoc/>
-        public Task<List<List<string>>> CreateTagsAsync(List<CreateChunkDto> chunks)
+        public Task<List<List<string>>> CreateTagsAsync(List<CreateChunkDto> chunks, CancellationToken cancellationToken = default)
         {
             var tags = new List<List<string>>();
             foreach (var chunk in chunks)

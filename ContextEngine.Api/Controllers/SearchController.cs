@@ -24,11 +24,12 @@ namespace ContextEngine.Api.Controllers
 
         /// <summary>Searches chunks matching the given query and filters.</summary>
         /// <param name="searchRequest">Search query and filter criteria.</param>
+        /// <param name="cancellationToken">Cancels the search if the caller disconnects.</param>
         [HttpPost]
         [ProducesResponseType<SearchResponse>(StatusCodes.Status200OK)]
-        public async Task<IActionResult> Search([FromBody] SearchRequest searchRequest)
+        public async Task<IActionResult> Search([FromBody] SearchRequest searchRequest, CancellationToken cancellationToken)
         {
-            var response = await _searchService.SearchAsync(searchRequest);
+            var response = await _searchService.SearchAsync(searchRequest, cancellationToken);
             return Ok(response);
         }
 
@@ -38,11 +39,12 @@ namespace ContextEngine.Api.Controllers
         /// for <see cref="Models.Requests.SearchRequest.Types"/>, <c>Topics</c> and <c>Tags</c> —
         /// filtering by a value not in this list will always return zero results.
         /// </summary>
+        /// <param name="cancellationToken">Cancels the lookup if the caller disconnects.</param>
         [HttpGet]
         [ProducesResponseType<SearchableOptionsResponse>(StatusCodes.Status200OK)]
-        public async Task<IActionResult> GetSearchableOptions()
+        public async Task<IActionResult> GetSearchableOptions(CancellationToken cancellationToken)
         {
-            var options = await _searchService.GetSearchableOptionsAsync();
+            var options = await _searchService.GetSearchableOptionsAsync(cancellationToken);
             return Ok(options);
         }
     }

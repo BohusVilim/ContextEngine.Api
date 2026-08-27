@@ -77,9 +77,10 @@ The codebase follows a conventional layered structure with everything wired thro
 Every service is registered `Scoped` (one instance per HTTP request) except `IEmbeddingService`, which is `Singleton` — the ONNX model and its `InferenceSession` are loaded once at startup (via `AddBertOnnxEmbeddingGenerator` in `Program.cs`) and reused for the app's lifetime, since loading it per-request would be wasteful and the model itself is stateless/thread-safe for inference.
 
 Cross-cutting concerns:
-- **Errors**: `GlobalExceptionHandler` ([`GlobalExceptionHandler.cs`](ContextEngine.Api/GlobalExceptionHandler.cs)) is the single place unhandled exceptions get mapped to an HTTP status + [RFC 7807](https://www.rfc-editor.org/rfc/rfc7807) `ProblemDetails` body. `NotSupportedException` → 400, `NotImplementedException` → 501, `FileNotFoundException`/`DirectoryNotFoundException` → 404, everything else → 500 with no message leaked to the client (the real exception is still logged server-side).
+- **Errors**: `GlobalExceptionHandler` ([`GlobalExceptionHandler.cs`](ContextEngine.Api/GlobalExceptionHandler.cs)) is the single place unhandled exceptions get mapped to an HTTP status + [RFC 7807](https://www.rfc-editor.org/rfc/rfc7807) `ProblemDetails` body. `NotSupportedException` → 400, `NotImplementedException` → 501, `FileNotFoundException`/`DirectoryNotFoundException` → 404, `UnauthorizedAccessException` → 403 (see [Configuration](#configuration)'s `DocumentUpload:AllowedRootPath`), everything else → 500 with no message leaked to the client (the real exception is still logged server-side).
 - **Enums over the wire**: controllers serialize enums (e.g. `ChunkType`) as their string name, not the underlying integer, via a `JsonStringEnumConverter` registered in `AddControllers().AddJsonOptions(...)` — so API payloads stay self-describing for an AI agent reading them without a schema.
 - **Auth**: `[Authorize]` on every controller, backed by ASP.NET Core Identity bearer tokens — see [Authentication & authorization](#authentication--authorization).
+- **Cancellation**: every controller action and service method accepts a `CancellationToken`, bound by ASP.NET Core to the request's `HttpContext.RequestAborted`. It's threaded all the way down through parsing, the AI topic/tag calls, embedding generation and the database call, so if a caller disconnects mid-upload (the one endpoint where that matters — see [How document parsing works](#how-document-parsing-works)), the work in flight is abandoned instead of running to completion for no one.
 
 ## Data model
 
@@ -153,6 +154,7 @@ Standard ASP.NET Core layered configuration — [`appsettings.json`](ContextEngi
 |---|---|---|
 | `ConnectionStrings:DefaultConnection` | `appsettings.Development.json` only | SQLite connection string, `Data Source=ContextEngine.db` — a file relative to the working directory. There's no production connection string checked in; set one via environment variable (`ConnectionStrings__DefaultConnection`) or user secrets when deploying. |
 | `ANTHROPIC_API_KEY` | Environment variable (not `appsettings.json`) | Read directly by the `Anthropic` SDK's `AnthropicClient` constructor in `Program.cs` — never stored in configuration files, so it can't accidentally end up committed. |
+| `DocumentUpload:AllowedRootPath` | Not set by default; add to `appsettings.json` or an environment variable (`DocumentUpload__AllowedRootPath`) to opt in | Restricts `POST /api/documents?documentPath=...` (see [Known limitations](#known-limitations)) to paths inside this directory. A path outside it — including one that escapes via `..` segments — is rejected with `403 Forbidden` instead of being read. Left unset by default, matching this API's design as a trusted local tool where any path the server's OS user can read is fair game; see `DocumentUploadOptions.AllowedRootPath` in [`Options/DocumentUploadOptions.cs`](ContextEngine.Api/Options/DocumentUploadOptions.cs). |
 | `Logging:LogLevel` | Both files | Standard ASP.NET Core log level configuration. |
 
 There is intentionally **no `appsettings.Production.json`** checked in — production configuration (connection string, allowed hosts, etc.) is expected to come from environment variables or a secrets store at deploy time, not from a file in source control.
@@ -160,6 +162,8 @@ There is intentionally **no `appsettings.Production.json`** checked in — produ
 ## Authentication & authorization
 
 Every endpoint under `/api/*` requires a bearer token. Authentication is handled entirely by **ASP.NET Core Identity's built-in minimal-API endpoints** (`MapIdentityApi<ApplicationUser>()` in `Program.cs`) — there is no hand-written `AuthController` in this codebase; `/register`, `/login`, `/refresh`, `/confirmEmail`, `/resendConfirmationEmail`, `/forgotPassword`, `/resetPassword`, `/manage/2fa` and `/manage/info` all come from the framework for free.
+
+`GET /health` is the one other unauthenticated route: a plain liveness probe (`AddHealthChecks()`/`MapHealthChecks("/health")` in `Program.cs`, no dependency checks beyond the process being up) for whatever runs or restarts this API — a Docker healthcheck, a process supervisor, a load balancer — returning a bare `200 OK`/`Healthy` with no data worth authenticating.
 
 **Why bearer tokens and not cookies**: `AddIdentityApiEndpoints` defaults to `IdentityConstants.BearerScheme` (an opaque, server-validated token, not a JWT), which fits a stateless API consumed by scripts/agents better than cookie-based auth, which assumes a browser. No extra NuGet package (e.g. a JWT library) was needed for this — it's built into `Microsoft.AspNetCore.Identity` as of .NET 8.
 
@@ -286,7 +290,7 @@ Note: `embedding` is **not** included — it's internal ranking input, not clien
 
 ## How document parsing works
 
-Both parsers implement the same contract — `Task<List<CreateChunkDto>> ParseAsync(string filePath)` — and both call `IAiHelper` internally at the end of parsing (see [How AI enrichment works](#how-ai-enrichment-works)) before returning. `DocumentService.UploadDocumentAsync` picks a parser purely by file extension.
+Both parsers implement the same contract — `Task<List<CreateChunkDto>> ParseAsync(string filePath, CancellationToken cancellationToken = default)` — and both call `IAiHelper` internally at the end of parsing (see [How AI enrichment works](#how-ai-enrichment-works)) before returning. `DocumentService.UploadDocumentAsync` picks a parser purely by file extension, after first checking `documentPath` against `DocumentUpload:AllowedRootPath` (see [Configuration](#configuration)) if one is configured.
 
 **`DocxParser`** ([`Parsers/DocxParser.cs`](ContextEngine.Api/Parsers/DocxParser.cs)) walks the Word document body via the Open XML SDK:
 - A paragraph styled `HeadingX` (any level) → `ChunkType.Heading`; any other non-empty paragraph → `ChunkType.Paragraph`.
@@ -306,7 +310,7 @@ Both parsers build a real tree, not a flat list — every non-heading chunk gets
 - **`DocxParser`** reads the level straight from the style id (`Heading1` → level 1, `Heading2` → level 2, ...; a heading style with no trailing digit defaults to level 1).
 - **`PdfParser`** has no such explicit level, since PDF headings are just "a line whose font is big enough" — so it derives one: every distinct heading font size found in the document is ranked largest-first into levels 1, 2, 3, ... (`GetHeadingLevelsBySize`), the PDF analogue of Word's `Heading1`/`Heading2` styles. This ancestry persists across page breaks (unlike paragraph line-merging, which resets per page — see above), so a section opened on one page still parents the chunks at the top of the next.
 
-Both parsers share the same ancestry rule (`BuildAncestry` in each): hitting a new heading pops every currently-open heading whose level is `>=` the new one's (a same-level heading is a sibling, ending the previous one's scope; a higher-numbered/smaller heading below it is irrelevant since it's already been popped) but leaves lower-level/larger ancestors open, then parents the new heading under whatever remains on top. A `Heading2` nests under the preceding `Heading1`; a second `Heading1` closes out any open `Heading2`s *and* the first `Heading1`, becoming a new top-level sibling.
+Both parsers share the same ancestry rule, factored out into one place (`HeadingAncestry.BuildParentId` in [`Parsers/HeadingAncestry.cs`](ContextEngine.Api/Parsers/HeadingAncestry.cs)) rather than duplicated per parser: hitting a new heading pops every currently-open heading whose level is `>=` the new one's (a same-level heading is a sibling, ending the previous one's scope; a higher-numbered/smaller heading below it is irrelevant since it's already been popped) but leaves lower-level/larger ancestors open, then parents the new heading under whatever remains on top. A `Heading2` nests under the preceding `Heading1`; a second `Heading1` closes out any open `Heading2`s *and* the first `Heading1`, becoming a new top-level sibling.
 
 Chunk identity for this to work is assigned by the parser itself, not at persistence time: `CreateChunkDto.Id` is generated when a chunk is created (so a later sibling/child can reference it as `ParentId` before anything is saved), and `ChunkMappings.MapDtosToChunks` carries that id through unchanged rather than generating a fresh one.
 
@@ -317,7 +321,7 @@ Chunk identity for this to work is assigned by the parser itself, not at persist
 1. **`CreateTopicsAsync`** — one call, given the whole document's concatenated text, asking for 1–5 short topics. The prompt lists every topic already in use elsewhere in the system (from `SearchService.GetSearchableOptionsAsync`) and instructs the model to reuse one of them when it's a genuinely good fit, only inventing a new one otherwise — this keeps the topic vocabulary from fragmenting into near-duplicates across documents (e.g. "Billing" vs. "Invoicing" vs. "Payments").
 2. **`CreateTagsAsync`** — one call, given every chunk indexed (`Chunk 0: ...`, `Chunk 1: ...`) so the model has whole-document context, asking for 1–5 tags per chunk, keyed back by index. Same reuse-existing-values instruction as topics.
 
-If the document has no non-blank content, both calls are skipped and empty topics/tags are returned — no wasted API call. `DocxParser`/`PdfParser` call these two methods sequentially (topics, then tags) right before returning their parsed chunks; `DocumentService` computes embeddings afterward, once topics/tags are already attached.
+If the document has no non-blank content, both calls are skipped and empty topics/tags are returned — no wasted API call. `DocxParser`/`PdfParser` call these two methods sequentially (topics, then tags) right before returning their parsed chunks; `DocumentService` computes embeddings afterward, once topics/tags are already attached — and does so for every chunk concurrently (`Parallel.ForEachAsync`, capped at `Environment.ProcessorCount`) rather than one at a time, since each chunk's embedding only depends on its own text. For a document with hundreds of chunks that's the difference between a handful of seconds and several minutes.
 
 ## How semantic search works
 
@@ -356,7 +360,11 @@ ContextEngine.Api/                    API project (net8.0, ASP.NET Core Web API)
   Parsers/
     DocxParser.cs                     .docx -> chunks (Open XML SDK)
     PdfParser.cs                      .pdf -> chunks (PdfPig + font-size/line-gap heuristics)
+    HeadingAncestry.cs                Shared heading-nesting rule used by both parsers
     Interfaces/                       IDocxParser, IPdfParser
+
+  Options/
+    DocumentUploadOptions.cs          AllowedRootPath - optional sandbox for POST /api/documents
 
   Models/
     Chunk/Chunk.cs                    The Chunk entity (see Data model)
@@ -388,7 +396,7 @@ ContextEngine.Api.Tests/              xUnit test project
 dotnet test ContextEngine.Api.sln
 ```
 
-104 tests, split into two kinds:
+107 tests, split into two kinds:
 
 - **Unit tests** (`ContextEngine.Api.Tests/Unit/`) — services, parsers and mappings tested in isolation with mocked dependencies (Moq). Cover `ChunkService`, `DocumentService`, `SearchService`, `OnnxEmbeddingService`, `DocxParser`, `PdfParser`, `ChunkMappings`, and `GlobalExceptionHandler`.
 - **API integration tests** (`ContextEngine.Api.Tests/Api/`) — boot the whole app in-process via `WebApplicationFactory<Program>` (see `ContextEngineApiFactory`), against a fresh temp-file SQLite database per test class, with the real `IAiHelper` swapped for a no-op `FakeAiHelper` (no network calls, no API key needed to run the suite). By default these tests also bypass authentication via `TestAuthHandler` — a fake scheme that authenticates every request as a fixed test user — so `ChunksControllerApiTests`, `DocumentsControllerApiTests` and `SearchControllerApiTests` can focus purely on business-logic behavior instead of token plumbing.
@@ -400,7 +408,7 @@ These are conscious trade-offs for a prototype/local-tool stage, not bugs — li
 
 - **`Topics`/`Tags`/date-range filtering loads the whole `Chunks` table into memory** (see [Data model](#data-model)). Fine at hundreds/low-thousands of chunks; the first thing to fix (normalize `Topics`/`Tags` into their own join tables) if the dataset grows meaningfully.
 - **No automatic migration on startup.** `dotnet ef database update` must be run by hand after pulling a new migration. Deliberate — auto-migrating in `Program.cs` is a common footgun in multi-instance deployments — but worth automating in a deploy script for this single-instance use case.
-- **`POST /api/documents` takes a server-local file path**, not a multipart upload. This is by design for a local tool the caller (e.g. an AI agent) and the API share a filesystem with, but it means the caller can make the server read *any* file it has OS-level permission to read — don't expose this endpoint beyond a trusted local/private network without adding path validation.
+- **`POST /api/documents` takes a server-local file path**, not a multipart upload. This is by design for a local tool the caller (e.g. an AI agent) and the API share a filesystem with, but it means the caller can make the server read *any* file it has OS-level permission to read, by default. Set `DocumentUpload:AllowedRootPath` (see [Configuration](#configuration)) to sandbox uploads to one directory if you don't fully trust every caller on the network this API is reachable from — but the underlying design (a path, not a file body, crosses the wire) doesn't change, so don't expose this endpoint beyond a trusted local/private network regardless.
 - **Flat authorization**: any authenticated user can read/write/delete any chunk or document — there's no per-user data ownership. Fine for a single-operator tool; would need an owning-user column + authorization checks for a genuinely multi-tenant deployment.
 - **`PdfParser` doesn't detect tables at all** — unlike `.docx`, a PDF has no native table markup, just glyph positions, so recognizing a table would need a separate column/row-alignment heuristic on top of the existing heading/paragraph ones. `.docx` tables, in contrast, are fully structurally parsed (`ChunkType.Table` → `TableRow` → `TableCell`, see [How document parsing works](#how-document-parsing-works)).
 - **`PdfParser`'s heading levels are inferred from font size**, not an explicit outline — a document that (unusually) uses the *same* font size for two conceptually different heading levels will have them collapse into one level in the tree; a document with meaningful visual variation in in-body text size (e.g. a large pull-quote) could be misread as an extra heading level. This is a natural extension of the existing font-size heading heuristic, with the same honest caveat: it works well for conventionally-formatted PDFs and can misclassify unusual layouts.

@@ -6,6 +6,7 @@ using ContextEngine.Api;
 using ContextEngine.Api.Data;
 using ContextEngine.Api.Mappings;
 using ContextEngine.Api.Models.Identity;
+using ContextEngine.Api.Options;
 using ContextEngine.Api.Parsers;
 using ContextEngine.Api.Parsers.Interfaces;
 using ContextEngine.Api.Services;
@@ -61,6 +62,11 @@ builder.Services.AddSwaggerGen(options =>
     });
 });
 
+// See DocumentUploadOptions.AllowedRootPath - unset by default (no restriction), matching this
+// API's design as a trusted local tool; set the "DocumentUpload:AllowedRootPath" configuration key
+// to sandbox POST /api/documents to a specific directory instead.
+builder.Services.Configure<DocumentUploadOptions>(builder.Configuration.GetSection("DocumentUpload"));
+
 builder.Services.AddScoped<IChunkService, ChunkService>();
 builder.Services.AddScoped<IDocumentService, DocumentService>();
 builder.Services.AddScoped<ISearchService, SearchService>();
@@ -87,6 +93,10 @@ builder.Services.AddScoped<IAiHelper, AiHelper>();
 builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
 builder.Services.AddProblemDetails();
 
+// Unauthenticated liveness probe (no dependency checks beyond the process being up and responsive)
+// for whatever runs/restarts this API - e.g. a Docker healthcheck or process supervisor.
+builder.Services.AddHealthChecks();
+
 var app = builder.Build();
 
 app.UseExceptionHandler();
@@ -108,6 +118,7 @@ app.UseAuthorization();
 // a token in the first place.
 app.MapIdentityApi<ApplicationUser>();
 
+app.MapHealthChecks("/health");
 app.MapControllers();
 
 app.Run();

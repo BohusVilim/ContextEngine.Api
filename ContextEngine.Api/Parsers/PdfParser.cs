@@ -51,8 +51,9 @@ namespace ContextEngine.Api.Parsers
         /// (document-wide) and tags (per chunk) are then filled in by <see cref="IAiHelper"/>.
         /// </summary>
         /// <param name="filePath">Path to the .pdf file to parse.</param>
+        /// <param name="cancellationToken">Propagated to the AI calls this parser makes internally (see <see cref="IAiHelper"/>).</param>
         /// <returns>Chunks in document order, ready to be mapped and persisted.</returns>
-        public async Task<List<CreateChunkDto>> ParseAsync(string filePath)
+        public async Task<List<CreateChunkDto>> ParseAsync(string filePath, CancellationToken cancellationToken = default)
         {
             var chunks = new List<CreateChunkDto>();
             var order = 0;
@@ -103,7 +104,7 @@ namespace ContextEngine.Api.Parsers
                         var level = headingLevelsBySize.TryGetValue(Math.Round(averageFontSize, 1), out var matchedLevel)
                             ? matchedLevel
                             : 1;
-                        var parentId = BuildAncestry(ancestors, level);
+                        var parentId = HeadingAncestry.BuildParentId(ancestors, level);
                         var headingId = Guid.NewGuid();
 
                         chunks.Add(new CreateChunkDto { Id = headingId, ParentId = parentId, Type = ChunkType.Heading, Order = order++, Content = text });
@@ -153,13 +154,13 @@ namespace ContextEngine.Api.Parsers
             }
 
             // Topics apply to the whole document, so the same list is copied onto every chunk.
-            var topics = await _aiHelper.CreateTopicsAsync(chunks);
+            var topics = await _aiHelper.CreateTopicsAsync(chunks, cancellationToken);
             foreach (var chunk in chunks)
             {
                 chunk.Topics = topics;
             }
 
-            var tags = await _aiHelper.CreateTagsAsync(chunks);
+            var tags = await _aiHelper.CreateTagsAsync(chunks, cancellationToken);
             for (var i = 0; i < chunks.Count; i++)
             {
                 chunks[i].Tags = tags[i];
@@ -227,65 +228,16 @@ namespace ContextEngine.Api.Parsers
         }
 
         /// <summary>
-        /// Pops any open heading whose level is not strictly less than <paramref name="level"/> - e.g.
-        /// hitting another level-2 heading closes out the previous one (same level: it's a sibling,
-        /// not a child) but leaves an enclosing level-1 heading open (lower level: still an ancestor) -
-        /// then returns what remains on top as the new heading's parent. Mirrors
-        /// <see cref="DocxParser"/>'s ancestry logic, just fed a font-size-derived level instead of a
-        /// Word style level.
-        /// </summary>
-        /// <param name="ancestors">Open headings, outermost first; mutated in place.</param>
-        /// <param name="level">Outline level of the heading about to be added.</param>
-        /// <returns>Id of the heading <paramref name="level"/> should nest under, or null if it belongs at the top.</returns>
-        private static Guid? BuildAncestry(Stack<(int Level, Guid Id)> ancestors, int level)
-        {
-            while (ancestors.Count > 0 && ancestors.Peek().Level >= level)
-            {
-                ancestors.Pop();
-            }
-
-            return ancestors.Count > 0 ? ancestors.Peek().Id : null;
-        }
-
-        /// <summary>
         /// Finds the most frequently occurring font size across the whole document, used as the
         /// baseline "body text" size that heading detection compares against.
         /// </summary>
         private static double GetMostCommonFontSize(PdfDocument document)
         {
-            var fontSizeCounts = new Dictionary<double, int>();
+            var roundedFontSizes = document.GetPages()
+                .SelectMany(page => page.Letters)
+                .Select(letter => Math.Round(letter.FontSize, 1));
 
-            foreach (var page in document.GetPages())
-            {
-                foreach (var letter in page.Letters)
-                {
-                    var roundedSize = Math.Round(letter.FontSize, 1);
-                    if (!fontSizeCounts.ContainsKey(roundedSize))
-                    {
-                        fontSizeCounts[roundedSize] = 0;
-                    }
-
-                    fontSizeCounts[roundedSize]++;
-                }
-            }
-
-            if (fontSizeCounts.Count == 0)
-            {
-                return 0;
-            }
-
-            var mostCommonSize = 0.0;
-            var mostCommonCount = 0;
-            foreach (var pair in fontSizeCounts)
-            {
-                if (pair.Value > mostCommonCount)
-                {
-                    mostCommonSize = pair.Key;
-                    mostCommonCount = pair.Value;
-                }
-            }
-
-            return mostCommonSize;
+            return GetMostFrequentValue(roundedFontSizes);
         }
 
         /// <summary>
@@ -327,44 +279,29 @@ namespace ContextEngine.Api.Parsers
         /// </summary>
         private static double GetTypicalLineGap(List<List<PdfLine>> pagesLines)
         {
-            var gapCounts = new Dictionary<double, int>();
+            var gaps = pagesLines
+                .SelectMany(pageLines => pageLines.Zip(pageLines.Skip(1), (line, nextLine) => Math.Round(line.Y - nextLine.Y, 1)))
+                .Where(gap => gap > 0);
 
-            foreach (var pageLines in pagesLines)
-            {
-                for (var i = 1; i < pageLines.Count; i++)
-                {
-                    var gap = Math.Round(pageLines[i - 1].Y - pageLines[i].Y, 1);
-                    if (gap <= 0)
-                    {
-                        continue;
-                    }
+            return GetMostFrequentValue(gaps);
+        }
 
-                    if (!gapCounts.ContainsKey(gap))
-                    {
-                        gapCounts[gap] = 0;
-                    }
-
-                    gapCounts[gap]++;
-                }
-            }
-
-            if (gapCounts.Count == 0)
+        /// <summary>
+        /// Returns the value that occurs most often in <paramref name="values"/> (or 0 if it's empty).
+        /// Ties are broken by whichever value occurs first in the sequence, matching what a simple
+        /// left-to-right scan that only replaces the current leader on a strictly higher count would
+        /// do - both <see cref="GetMostCommonFontSize"/> and <see cref="GetTypicalLineGap"/> rely on
+        /// this same tie-breaking behavior.
+        /// </summary>
+        private static double GetMostFrequentValue(IEnumerable<double> values)
+        {
+            var countsByFirstAppearance = values.GroupBy(value => value).ToList();
+            if (countsByFirstAppearance.Count == 0)
             {
                 return 0;
             }
 
-            var mostCommonGap = 0.0;
-            var mostCommonCount = 0;
-            foreach (var pair in gapCounts)
-            {
-                if (pair.Value > mostCommonCount)
-                {
-                    mostCommonGap = pair.Key;
-                    mostCommonCount = pair.Value;
-                }
-            }
-
-            return mostCommonGap;
+            return countsByFirstAppearance.OrderByDescending(group => group.Count()).First().Key;
         }
 
         /// <summary>A reconstructed text line: its glyphs plus the line's baseline Y, used to detect paragraph breaks by vertical gap.</summary>

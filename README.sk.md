@@ -77,9 +77,10 @@ Kód sleduje bežnú vrstvenú štruktúru, všetko zapojené cez dependency inj
 Každý service je registrovaný ako `Scoped` (jedna inštancia na HTTP request), okrem `IEmbeddingService`, ktorý je `Singleton` — ONNX model a jeho `InferenceSession` sa načítajú raz pri štarte (cez `AddBertOnnxEmbeddingGenerator` v `Program.cs`) a znovupoužívajú počas celej životnosti appky, keďže načítavať ho pri každom requeste by bolo zbytočné a samotný model je pri inferencii bezstavový/thread-safe.
 
 Prierezové záležitosti:
-- **Chyby**: `GlobalExceptionHandler` ([`GlobalExceptionHandler.cs`](ContextEngine.Api/GlobalExceptionHandler.cs)) je jediné miesto, kde sa neošetrené výnimky mapujú na HTTP status + telo [RFC 7807](https://www.rfc-editor.org/rfc/rfc7807) `ProblemDetails`. `NotSupportedException` → 400, `NotImplementedException` → 501, `FileNotFoundException`/`DirectoryNotFoundException` → 404, všetko ostatné → 500 bez toho, aby sa klientovi prezradila správa (skutočná výnimka sa naďalej loguje na serveri).
+- **Chyby**: `GlobalExceptionHandler` ([`GlobalExceptionHandler.cs`](ContextEngine.Api/GlobalExceptionHandler.cs)) je jediné miesto, kde sa neošetrené výnimky mapujú na HTTP status + telo [RFC 7807](https://www.rfc-editor.org/rfc/rfc7807) `ProblemDetails`. `NotSupportedException` → 400, `NotImplementedException` → 501, `FileNotFoundException`/`DirectoryNotFoundException` → 404, `UnauthorizedAccessException` → 403 (pozri `DocumentUpload:AllowedRootPath` v [Konfigurácia](#konfigurácia)), všetko ostatné → 500 bez toho, aby sa klientovi prezradila správa (skutočná výnimka sa naďalej loguje na serveri).
 - **Enumy cez sieť**: kontrolery serializujú enumy (napr. `ChunkType`) ako reťazcový názov, nie ako číslo, cez `JsonStringEnumConverter` registrovaný v `AddControllers().AddJsonOptions(...)` — API payloady tak ostávajú samopopisné aj pre AI agenta, ktorý ich číta bez znalosti schémy.
 - **Autentifikácia**: `[Authorize]` na každom kontroleri, postavené na bearer tokenoch ASP.NET Core Identity — pozri [Autentifikácia a autorizácia](#autentifikácia-a-autorizácia).
+- **Zrušenie requestu**: každá akcia kontrolera aj metóda service prijíma `CancellationToken`, ktorý ASP.NET Core naviaže na `HttpContext.RequestAborted` requestu. Prenáša sa až dole cez parsovanie, AI volania na topics/tags, generovanie embeddingov aj databázové volanie — takže ak sa volajúci odpojí uprostred uploadu (jediný endpoint, kde na tom naozaj záleží — pozri [Ako funguje parsovanie dokumentov](#ako-funguje-parsovanie-dokumentov)), rozrobená práca sa zahodí namiesto toho, aby dobehla do konca pre nikoho.
 
 ## Dátový model
 
@@ -153,6 +154,7 @@ API beží na `https://localhost:7056` (a `http://localhost:5209`) podľa [`Prop
 |---|---|---|
 | `ConnectionStrings:DefaultConnection` | Len `appsettings.Development.json` | SQLite connection string, `Data Source=ContextEngine.db` — súbor relatívny k pracovnému adresáru. Produkčný connection string nie je súčasťou repozitára; pri nasadení ho nastav cez premennú prostredia (`ConnectionStrings__DefaultConnection`) alebo user secrets. |
 | `ANTHROPIC_API_KEY` | Premenná prostredia (nie `appsettings.json`) | Číta ju priamo konštruktor `AnthropicClient` z `Anthropic` SDK v `Program.cs` — nikdy sa neukladá do konfiguračných súborov, takže sa nemôže omylom commitnúť. |
+| `DocumentUpload:AllowedRootPath` | Predvolene nenastavené; pridaj do `appsettings.json` alebo cez premennú prostredia (`DocumentUpload__AllowedRootPath`), ak sa chceš zapojiť | Obmedzí `POST /api/documents?documentPath=...` (pozri [Známe obmedzenia](#známe-obmedzenia)) len na cesty v rámci tohto adresára. Cesta mimo neho — vrátane takej, čo z neho unikne cez segmenty `..` — sa zamietne s `403 Forbidden` namiesto toho, aby sa prečítala. Predvolene nenastavené, v súlade s tým, že appka je navrhnutá ako dôveryhodný lokálny nástroj, kde je fér prečítať ktorýkoľvek súbor, na ktorý má OS používateľ servera prístup; pozri `DocumentUploadOptions.AllowedRootPath` v [`Options/DocumentUploadOptions.cs`](ContextEngine.Api/Options/DocumentUploadOptions.cs). |
 | `Logging:LogLevel` | Oba súbory | Štandardná konfigurácia log levelu ASP.NET Core. |
 
 Zámerne **chýba `appsettings.Production.json`** — očakáva sa, že produkčná konfigurácia (connection string, allowed hosts, atď.) príde z premenných prostredia alebo úložiska secretov pri nasadení, nie zo súboru vo verzovacom systéme.
@@ -160,6 +162,8 @@ Zámerne **chýba `appsettings.Production.json`** — očakáva sa, že produkč
 ## Autentifikácia a autorizácia
 
 Každý endpoint pod `/api/*` vyžaduje bearer token. Autentifikáciu kompletne zabezpečujú **vstavané minimal-API endpointy ASP.NET Core Identity** (`MapIdentityApi<ApplicationUser>()` v `Program.cs`) — v kóde nie je žiadny ručne písaný `AuthController`; `/register`, `/login`, `/refresh`, `/confirmEmail`, `/resendConfirmationEmail`, `/forgotPassword`, `/resetPassword`, `/manage/2fa` a `/manage/info` sú z frameworku zadarmo.
+
+`GET /health` je jediná ďalšia neautentifikovaná route: obyčajný liveness probe (`AddHealthChecks()`/`MapHealthChecks("/health")` v `Program.cs`, bez kontroly akýchkoľvek závislostí, len že proces beží) pre čokoľvek, čo túto appku spúšťa alebo reštartuje — Docker healthcheck, process supervisor, load balancer — vracia holé `200 OK`/`Healthy` bez dát, ktoré by stálo za to autentifikovať.
 
 **Prečo bearer tokeny a nie cookies**: `AddIdentityApiEndpoints` defaultne používa `IdentityConstants.BearerScheme` (nepriehľadný, serverom validovaný token, nie JWT), čo sa lepšie hodí pre bezstavové API konzumované skriptami/agentmi než cookie-based auth, ktorá predpokladá prehliadač. Na toto nebol potrebný žiadny extra NuGet balík (napr. JWT knižnica) — je to súčasť `Microsoft.AspNetCore.Identity` od .NET 8.
 
@@ -285,7 +289,7 @@ Telo `SearchRequest`:
 
 ## Ako funguje parsovanie dokumentov
 
-Oba parsery implementujú rovnaký kontrakt — `Task<List<CreateChunkDto>> ParseAsync(string filePath)` — a oba na konci parsovania interne volajú `IAiHelper` (pozri [Ako funguje AI obohacovanie](#ako-funguje-ai-obohacovanie)) predtým, ako vrátia výsledok. `DocumentService.UploadDocumentAsync` vyberá parser čisto podľa prípony súboru.
+Oba parsery implementujú rovnaký kontrakt — `Task<List<CreateChunkDto>> ParseAsync(string filePath, CancellationToken cancellationToken = default)` — a oba na konci parsovania interne volajú `IAiHelper` (pozri [Ako funguje AI obohacovanie](#ako-funguje-ai-obohacovanie)) predtým, ako vrátia výsledok. `DocumentService.UploadDocumentAsync` vyberá parser čisto podľa prípony súboru, po tom, čo najprv overí `documentPath` voči `DocumentUpload:AllowedRootPath` (pozri [Konfigurácia](#konfigurácia)), ak je nastavené.
 
 **`DocxParser`** ([`Parsers/DocxParser.cs`](ContextEngine.Api/Parsers/DocxParser.cs)) prechádza telo Word dokumentu cez Open XML SDK:
 - Odsek so štýlom `HeadingX` (akákoľvek úroveň) → `ChunkType.Heading`; akýkoľvek iný neprázdny odsek → `ChunkType.Paragraph`.
@@ -305,7 +309,7 @@ Oba parsery budujú skutočný strom, nie plochý zoznam — každý ne-nadpisov
 - **`DocxParser`** číta úroveň priamo zo style id (`Heading1` → úroveň 1, `Heading2` → úroveň 2, ...; heading štýl bez čísla na konci defaultne dostane úroveň 1).
 - **`PdfParser`** takúto explicitnú úroveň nemá, keďže PDF nadpisy sú len "riadok s dostatočne veľkým fontom" — preto si ju odvodí sám: každá distinct veľkosť fontu nájdená u nadpisov v dokumente sa zoradí od najväčšej po najmenšiu do úrovní 1, 2, 3, ... (`GetHeadingLevelsBySize`), čo je PDF obdoba Word štýlov `Heading1`/`Heading2`. Táto hierarchia prežíva aj cez zlom strany (na rozdiel od zlučovania riadkov do odsekov, ktoré sa resetuje na každej strane — pozri vyššie), takže sekcia otvorená na jednej strane je stále rodičom pre chunky na začiatku ďalšej.
 
-Oba parsery zdieľajú rovnaké pravidlo pre hierarchiu (`BuildAncestry` v každom z nich): pri novom nadpise sa odstránia (pop) všetky aktuálne otvorené nadpisy, ktorých úroveň je `>=` úrovni nového nadpisu (nadpis rovnakej úrovne je súrodenec, ukončuje rozsah predchádzajúceho), ale nižšie-číselné/väčšie (nadradené) nadpisy ostávajú otvorené — nový nadpis sa potom zaradí pod to, čo zostalo navrchu. `Heading2` sa vnorí pod predchádzajúci `Heading1`; druhý `Heading1` uzavrie všetky otvorené `Heading2` *aj* prvý `Heading1` a stane sa novým súrodencom na najvyššej úrovni.
+Oba parsery zdieľajú rovnaké pravidlo pre hierarchiu, vytiahnuté na jedno miesto (`HeadingAncestry.BuildParentId` v [`Parsers/HeadingAncestry.cs`](ContextEngine.Api/Parsers/HeadingAncestry.cs)) namiesto toho, aby ho mal každý parser duplicitne u seba: pri novom nadpise sa odstránia (pop) všetky aktuálne otvorené nadpisy, ktorých úroveň je `>=` úrovni nového nadpisu (nadpis rovnakej úrovne je súrodenec, ukončuje rozsah predchádzajúceho), ale nižšie-číselné/väčšie (nadradené) nadpisy ostávajú otvorené — nový nadpis sa potom zaradí pod to, čo zostalo navrchu. `Heading2` sa vnorí pod predchádzajúci `Heading1`; druhý `Heading1` uzavrie všetky otvorené `Heading2` *aj* prvý `Heading1` a stane sa novým súrodencom na najvyššej úrovni.
 
 Aby toto fungovalo, identitu chunku priraďuje samotný parser, nie až fáza ukladania: `CreateChunkDto.Id` sa vygeneruje pri vzniku chunku (aby naň mohol neskorší súrodenec/potomok odkázať cez `ParentId` ešte pred uložením), a `ChunkMappings.MapDtosToChunks` toto id prenesie nezmenené namiesto generovania nového.
 
@@ -316,7 +320,7 @@ Aby toto fungovalo, identitu chunku priraďuje samotný parser, nie až fáza uk
 1. **`CreateTopicsAsync`** — jedno volanie, dostane spojený text celého dokumentu, žiada 1–5 krátkych topics. Prompt vymenuje všetky topics, ktoré sa už niekde v systéme používajú (z `SearchService.GetSearchableOptionsAsync`) a inštruuje model, aby jedno z nich znovupoužil, ak sa naozaj hodí, a nový vymyslel len vtedy, keď žiadne existujúce naozaj nesedí — to bráni fragmentácii slovníka topics na takmer-duplicity naprieč dokumentmi (napr. "Fakturácia" vs. "Faktúry" vs. "Platby").
 2. **`CreateTagsAsync`** — jedno volanie, dostane každý chunk s indexom (`Chunk 0: ...`, `Chunk 1: ...`), aby mal model kontext celého dokumentu, žiada 1–5 tagov na chunk, viazaných späť podľa indexu. Rovnaká inštrukcia na znovupoužitie existujúcich hodnôt ako pri topics.
 
-Ak dokument nemá žiadny neprázdny obsah, obe volania sa preskočia a vrátia sa prázdne topics/tags — bez zbytočného API volania. `DocxParser`/`PdfParser` volajú tieto dve metódy postupne (najprv topics, potom tags) tesne predtým, než vrátia svoje rozparsované chunky; `DocumentService` počíta embeddingy až potom, keď sú topics/tags už priradené.
+Ak dokument nemá žiadny neprázdny obsah, obe volania sa preskočia a vrátia sa prázdne topics/tags — bez zbytočného API volania. `DocxParser`/`PdfParser` volajú tieto dve metódy postupne (najprv topics, potom tags) tesne predtým, než vrátia svoje rozparsované chunky; `DocumentService` počíta embeddingy až potom, keď sú topics/tags už priradené — a robí to pre všetky chunky súbežne (`Parallel.ForEachAsync`, s limitom na `Environment.ProcessorCount`), nie jeden po druhom, keďže embedding každého chunku závisí len od jeho vlastného textu. Pri dokumente so stovkami chunkov je to rozdiel medzi pár sekundami a niekoľkými minútami.
 
 ## Ako funguje sémantické vyhľadávanie
 
@@ -355,7 +359,11 @@ ContextEngine.Api/                    API projekt (net8.0, ASP.NET Core Web API)
   Parsers/
     DocxParser.cs                     .docx -> chunky (Open XML SDK)
     PdfParser.cs                      .pdf -> chunky (PdfPig + heuristiky veľkosti fontu/medzery riadkov)
+    HeadingAncestry.cs                Zdieľané pravidlo vnárania nadpisov pre oba parsery
     Interfaces/                       IDocxParser, IPdfParser
+
+  Options/
+    DocumentUploadOptions.cs          AllowedRootPath - voliteľný sandbox pre POST /api/documents
 
   Models/
     Chunk/Chunk.cs                    Entita Chunk (pozri Dátový model)
@@ -387,7 +395,7 @@ ContextEngine.Api.Tests/              xUnit testovací projekt
 dotnet test ContextEngine.Api.sln
 ```
 
-104 testov, rozdelených na dva druhy:
+107 testov, rozdelených na dva druhy:
 
 - **Unit testy** (`ContextEngine.Api.Tests/Unit/`) — services, parsery a mappings testované izolovane s mockovanými závislosťami (Moq). Pokrývajú `ChunkService`, `DocumentService`, `SearchService`, `OnnxEmbeddingService`, `DocxParser`, `PdfParser`, `ChunkMappings` a `GlobalExceptionHandler`.
 - **API integračné testy** (`ContextEngine.Api.Tests/Api/`) — spúšťajú celú appku in-process cez `WebApplicationFactory<Program>` (pozri `ContextEngineApiFactory`), voči čerstvej dočasnej SQLite databáze pre každú testovaciu triedu, so skutočným `IAiHelper` nahradeným no-op `FakeAiHelper` (žiadne sieťové volania, na spustenie sady netreba API kľúč). Tieto testy defaultne aj obchádzajú autentifikáciu cez `TestAuthHandler` — falošnú schému, ktorá autentifikuje každý request ako fixného testovacieho používateľa — takže `ChunksControllerApiTests`, `DocumentsControllerApiTests` a `SearchControllerApiTests` sa môžu sústrediť čisto na business logiku namiesto plumbingu okolo tokenov.
@@ -399,7 +407,7 @@ Toto sú vedomé kompromisy pre fázu prototypu/lokálneho nástroja, nie chyby 
 
 - **Filtrovanie `Topics`/`Tags`/dátumového rozsahu načíta celú tabuľku `Chunks` do pamäte** (pozri [Dátový model](#dátový-model)). V poriadku pri stovkách/nízkych tisíckach chunkov; prvá vec na opravu (normalizovať `Topics`/`Tags` do vlastných join tabuliek), ak dataset výrazne narastie.
 - **Žiadna automatická migrácia pri štarte.** `dotnet ef database update` treba spustiť ručne po každom pulle novej migrácie. Zámer — auto-migrácia v `Program.cs` je bežná pasca pri nasadeniach s viacerými inštanciami — ale pre tento single-instance use case sa oplatí zautomatizovať v deploy skripte.
-- **`POST /api/documents` prijíma server-lokálnu cestu k súboru**, nie multipart upload. Toto je zámer pre lokálny nástroj, kde volajúci (napr. AI agent) a API zdieľajú súborový systém, ale znamená to, že volajúci môže prinútiť server prečítať *ktorýkoľvek* súbor, na ktorý má OS-úrovňové oprávnenie — nevystavuj tento endpoint mimo dôveryhodnej lokálnej/súkromnej siete bez pridania validácie cesty.
+- **`POST /api/documents` prijíma server-lokálnu cestu k súboru**, nie multipart upload. Toto je zámer pre lokálny nástroj, kde volajúci (napr. AI agent) a API zdieľajú súborový systém, ale predvolene to znamená, že volajúci môže prinútiť server prečítať *ktorýkoľvek* súbor, na ktorý má OS-úrovňové oprávnenie. Nastav `DocumentUpload:AllowedRootPath` (pozri [Konfigurácia](#konfigurácia)), aby si upload obmedzil na jeden adresár, ak nedôveruješ úplne každému volajúcemu v sieti, kde je toto API dostupné — ale samotný dizajn (cez drôt ide cesta, nie telo súboru) sa tým nemení, takže tento endpoint aj tak nevystavuj mimo dôveryhodnej lokálnej/súkromnej siete.
 - **Plochá autorizácia**: ktorýkoľvek prihlásený používateľ môže čítať/zapisovať/mazať ktorýkoľvek chunk alebo dokument — neexistuje vlastníctvo dát per-user. V poriadku pre nástroj s jedným operátorom; pre skutočne multi-tenant nasadenie by bolo treba stĺpec s vlastniacim používateľom + autorizačné kontroly.
 - **`PdfParser` tabuľky vôbec nedetekuje** — na rozdiel od `.docx` nemá PDF žiadne natívne značenie tabuľky, len súradnice glyfov, takže rozpoznanie tabuľky by vyžadovalo samostatnú heuristiku na zarovnanie stĺpcov/riadkov popri existujúcich heuristikách pre nadpisy/odseky. `.docx` tabuľky sú naproti tomu plne štrukturálne parsované (`ChunkType.Table` → `TableRow` → `TableCell`, pozri [Ako funguje parsovanie dokumentov](#ako-funguje-parsovanie-dokumentov)).
 - **Úrovne nadpisov v `PdfParser` sú odvodené z veľkosti fontu**, nie z explicitnej osnovy — dokument, ktorý (nezvyčajne) použije *rovnakú* veľkosť fontu pre dve koncepčne odlišné úrovne nadpisov, ich v strome zlúči do jednej úrovne; dokument s výrazným vizuálnym rozdielom vo veľkosti bežného textu (napr. veľký citát) môže byť nesprávne interpretovaný ako extra úroveň nadpisu. Toto je prirodzené rozšírenie existujúcej heuristiky pre detekciu nadpisov podľa fontu, s rovnakým úprimným upozornením: funguje dobre na bežne formátovaných PDF a môže zlyhať na nezvyčajných layoutoch.

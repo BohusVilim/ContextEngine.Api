@@ -31,7 +31,7 @@ namespace ContextEngine.Api.Services
         }
 
         /// <inheritdoc/>
-        public async Task<List<string>> CreateTopicsAsync(List<CreateChunkDto> chunks)
+        public async Task<List<string>> CreateTopicsAsync(List<CreateChunkDto> chunks, CancellationToken cancellationToken = default)
         {
             var documentText = BuildDocumentText(chunks);
             if (string.IsNullOrWhiteSpace(documentText))
@@ -39,7 +39,7 @@ namespace ContextEngine.Api.Services
                 return new List<string>();
             }
 
-            var existingTopics = (await _searchService.GetSearchableOptionsAsync()).Topics;
+            var existingTopics = (await _searchService.GetSearchableOptionsAsync(cancellationToken)).Topics;
 
             var parameters = new MessageCreateParams
             {
@@ -59,7 +59,7 @@ namespace ContextEngine.Api.Services
                 ]
             };
 
-            var response = await _client.Messages.Create(parameters);
+            var response = await _client.Messages.Create(parameters, cancellationToken);
             var json = GetResponseText(response);
 
             var result = JsonSerializer.Deserialize<TopicsResult>(json, DeserializeOptions);
@@ -72,7 +72,7 @@ namespace ContextEngine.Api.Services
         }
 
         /// <inheritdoc/>
-        public async Task<List<List<string>>> CreateTagsAsync(List<CreateChunkDto> chunks)
+        public async Task<List<List<string>>> CreateTagsAsync(List<CreateChunkDto> chunks, CancellationToken cancellationToken = default)
         {
             var emptyTags = BuildEmptyTags(chunks.Count);
 
@@ -82,7 +82,7 @@ namespace ContextEngine.Api.Services
                 return emptyTags;
             }
 
-            var existingTags = (await _searchService.GetSearchableOptionsAsync()).Tags;
+            var existingTags = (await _searchService.GetSearchableOptionsAsync(cancellationToken)).Tags;
 
             var parameters = new MessageCreateParams
             {
@@ -103,7 +103,7 @@ namespace ContextEngine.Api.Services
                 ]
             };
 
-            var response = await _client.Messages.Create(parameters);
+            var response = await _client.Messages.Create(parameters, cancellationToken);
             var json = GetResponseText(response);
 
             var result = JsonSerializer.Deserialize<TagsResult>(json, DeserializeOptions);

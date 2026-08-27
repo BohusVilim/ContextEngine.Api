@@ -31,6 +31,7 @@ namespace ContextEngine.Api.Tests.Unit
             yield return new object[] { new NotImplementedException("not done"), StatusCodes.Status501NotImplemented };
             yield return new object[] { new FileNotFoundException("missing"), StatusCodes.Status404NotFound };
             yield return new object[] { new DirectoryNotFoundException("missing dir"), StatusCodes.Status404NotFound };
+            yield return new object[] { new UnauthorizedAccessException("path outside allowed root"), StatusCodes.Status403Forbidden };
             yield return new object[] { new InvalidOperationException("boom"), StatusCodes.Status500InternalServerError };
         }
 
