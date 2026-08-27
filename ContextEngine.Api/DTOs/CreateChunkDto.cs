@@ -8,6 +8,15 @@ namespace ContextEngine.Api.DTOs
     /// </summary>
     public class CreateChunkDto
     {
+        /// <summary>
+        /// Id this chunk will be persisted under. Assigned by the parser (not by
+        /// <see cref="Mappings.ChunkMappings"/>) so a parser can set another chunk's
+        /// <see cref="ParentId"/> to it before either one has actually been saved - see
+        /// <see cref="Parsers.DocxParser"/>/<see cref="Parsers.PdfParser"/> for how the heading tree
+        /// is built this way.
+        /// </summary>
+        public Guid Id { get; set; } = Guid.NewGuid();
+
         public Guid SourceId { get; set; }
         public Guid? ParentId { get; set; }
         public ChunkType Type { get; set; }

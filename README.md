@@ -89,7 +89,7 @@ There's a single core entity, `Chunk` ([`Models/Chunk/Chunk.cs`](ContextEngine.A
 |---|---|---|
 | `Id` | `Guid` | Primary key. |
 | `SourceId` | `Guid` | Id of the document this chunk belongs to. Every chunk parsed from one `POST /api/documents` call shares the same `SourceId` — there's no separate `Document` table. |
-| `ParentId` / `Parent` / `Children` | `Guid?` / `Chunk?` / `List<Chunk>` | Self-referencing tree (a chunk can be nested under another). Deleting a chunk **cascades** to its whole sub-tree. Parsers currently emit a flat list (`ParentId` is always null on upload), so today every chunk's parent is empty — the tree/nesting support exists in the schema for future parser improvements (e.g. nesting paragraphs under their heading). |
+| `ParentId` / `Parent` / `Children` | `Guid?` / `Chunk?` / `List<Chunk>` | Self-referencing tree. Both parsers nest each chunk under the most recent heading open at that point (a heading itself nests under the most recent heading of a strictly outer level) — see [How document parsing works](#how-document-parsing-works). Deleting a chunk **cascades** to its whole sub-tree. |
 | `Type` | `ChunkType` (enum) | See below. |
 | `Order` | `int` | Position within the document, in document reading order. |
 | `Content` | `string?` | The chunk's text. |
@@ -299,6 +299,17 @@ Both parsers implement the same contract — `Task<List<CreateChunkDto>> ParseAs
 
 Both heuristics are intentionally simple and font/layout-dependent — they work well on conventionally-formatted documents (consistent body font, normal paragraph spacing) and can misclassify unusual layouts (multi-column PDFs, decorative fonts, scanned/image-only PDFs with no text layer at all).
 
+### Heading-based nesting
+
+Both parsers build a real tree, not a flat list — every non-heading chunk gets `ParentId` set to the most recent heading open at that point, and a heading nests under the most recent heading of a strictly outer (lower) level:
+
+- **`DocxParser`** reads the level straight from the style id (`Heading1` → level 1, `Heading2` → level 2, ...; a heading style with no trailing digit defaults to level 1).
+- **`PdfParser`** has no such explicit level, since PDF headings are just "a line whose font is big enough" — so it derives one: every distinct heading font size found in the document is ranked largest-first into levels 1, 2, 3, ... (`GetHeadingLevelsBySize`), the PDF analogue of Word's `Heading1`/`Heading2` styles. This ancestry persists across page breaks (unlike paragraph line-merging, which resets per page — see above), so a section opened on one page still parents the chunks at the top of the next.
+
+Both parsers share the same ancestry rule (`BuildAncestry` in each): hitting a new heading pops every currently-open heading whose level is `>=` the new one's (a same-level heading is a sibling, ending the previous one's scope; a higher-numbered/smaller heading below it is irrelevant since it's already been popped) but leaves lower-level/larger ancestors open, then parents the new heading under whatever remains on top. A `Heading2` nests under the preceding `Heading1`; a second `Heading1` closes out any open `Heading2`s *and* the first `Heading1`, becoming a new top-level sibling.
+
+Chunk identity for this to work is assigned by the parser itself, not at persistence time: `CreateChunkDto.Id` is generated when a chunk is created (so a later sibling/child can reference it as `ParentId` before anything is saved), and `ChunkMappings.MapDtosToChunks` carries that id through unchanged rather than generating a fresh one.
+
 ## How AI enrichment works
 
 `AiHelper` ([`Services/AiHelper.cs`](ContextEngine.Api/Services/AiHelper.cs)) makes two Claude calls per uploaded document, both using model `claude-opus-5` at `Effort.Low` (a cheap classification task, not worth a larger model or more reasoning effort) with a JSON output schema that constrains the response shape:
@@ -377,7 +388,7 @@ ContextEngine.Api.Tests/              xUnit test project
 dotnet test ContextEngine.Api.sln
 ```
 
-101 tests, split into two kinds:
+103 tests, split into two kinds:
 
 - **Unit tests** (`ContextEngine.Api.Tests/Unit/`) — services, parsers and mappings tested in isolation with mocked dependencies (Moq). Cover `ChunkService`, `DocumentService`, `SearchService`, `OnnxEmbeddingService`, `DocxParser`, `PdfParser`, `ChunkMappings`, and `GlobalExceptionHandler`.
 - **API integration tests** (`ContextEngine.Api.Tests/Api/`) — boot the whole app in-process via `WebApplicationFactory<Program>` (see `ContextEngineApiFactory`), against a fresh temp-file SQLite database per test class, with the real `IAiHelper` swapped for a no-op `FakeAiHelper` (no network calls, no API key needed to run the suite). By default these tests also bypass authentication via `TestAuthHandler` — a fake scheme that authenticates every request as a fixed test user — so `ChunksControllerApiTests`, `DocumentsControllerApiTests` and `SearchControllerApiTests` can focus purely on business-logic behavior instead of token plumbing.
@@ -391,8 +402,8 @@ These are conscious trade-offs for a prototype/local-tool stage, not bugs — li
 - **No automatic migration on startup.** `dotnet ef database update` must be run by hand after pulling a new migration. Deliberate — auto-migrating in `Program.cs` is a common footgun in multi-instance deployments — but worth automating in a deploy script for this single-instance use case.
 - **`POST /api/documents` takes a server-local file path**, not a multipart upload. This is by design for a local tool the caller (e.g. an AI agent) and the API share a filesystem with, but it means the caller can make the server read *any* file it has OS-level permission to read — don't expose this endpoint beyond a trusted local/private network without adding path validation.
 - **Flat authorization**: any authenticated user can read/write/delete any chunk or document — there's no per-user data ownership. Fine for a single-operator tool; would need an owning-user column + authorization checks for a genuinely multi-tenant deployment.
-- **Tables aren't structurally parsed.** A `Table` chunk holds the entire table's text as one blob (`InnerText`), not individual rows/cells — `ChunkType.TableRow`/`TableCell` exist in the enum but nothing produces them yet.
-- **The `Chunk.Parent`/`Children` tree is unused by both parsers today** — every chunk from a `POST /api/documents` call is a sibling with `ParentId == null`. The self-referencing schema is ready for nesting (e.g. paragraphs under their heading) once a parser implements it.
+- **Tables aren't structurally parsed.** A `Table` chunk holds the entire table's text as one blob (`InnerText`), not individual rows/cells — `ChunkType.TableRow`/`TableCell` exist in the enum but nothing produces them yet. A table also isn't nested under a heading the way paragraphs are in `DocxParser` — see its source for the current handling.
+- **`PdfParser`'s heading levels are inferred from font size**, not an explicit outline — a document that (unusually) uses the *same* font size for two conceptually different heading levels will have them collapse into one level in the tree; a document with meaningful visual variation in in-body text size (e.g. a large pull-quote) could be misread as an extra heading level. This is a natural extension of the existing font-size heading heuristic, with the same honest caveat: it works well for conventionally-formatted PDFs and can misclassify unusual layouts.
 
 ## License notes
 

@@ -89,7 +89,7 @@ Existuje jedna hlavná entita, `Chunk` ([`Models/Chunk/Chunk.cs`](ContextEngine.
 |---|---|---|
 | `Id` | `Guid` | Primárny kľúč. |
 | `SourceId` | `Guid` | Id dokumentu, ku ktorému chunk patrí. Všetky chunky z jedného volania `POST /api/documents` zdieľajú rovnaký `SourceId` — samostatná tabuľka `Document` neexistuje. |
-| `ParentId` / `Parent` / `Children` | `Guid?` / `Chunk?` / `List<Chunk>` | Self-referencing strom (chunk môže byť vnorený pod iný). Zmazanie chunku **kaskádovito** zmaže celý jeho podstrom. Parsery aktuálne produkujú plochý zoznam (`ParentId` je pri uploade vždy null), takže dnes je rodič každého chunku prázdny — podpora stromu/vnárania existuje v schéme pre budúce vylepšenia parserov (napr. vnorenie odsekov pod ich nadpis). |
+| `ParentId` / `Parent` / `Children` | `Guid?` / `Chunk?` / `List<Chunk>` | Self-referencing strom. Oba parsery vnárajú každý chunk pod najbližšie otvorený nadpis (samotný nadpis sa vnára pod najbližší nadpis prísne vyššej úrovne) — pozri [Ako funguje parsovanie dokumentov](#ako-funguje-parsovanie-dokumentov). Zmazanie chunku **kaskádovito** zmaže celý jeho podstrom. |
 | `Type` | `ChunkType` (enum) | Pozri nižšie. |
 | `Order` | `int` | Pozícia v dokumente, v poradí čítania. |
 | `Content` | `string?` | Text chunku. |
@@ -298,6 +298,17 @@ Oba parsery implementujú rovnaký kontrakt — `Task<List<CreateChunkDto>> Pars
 
 Obe heuristiky sú zámerne jednoduché a závislé od fontu/layoutu — fungujú dobre na bežne formátovaných dokumentoch (konzistentný font tela, normálne riadkovanie) a môžu nesprávne klasifikovať nezvyčajné layouty (viacstĺpcové PDF, dekoratívne fonty, skenované/obrázkové PDF bez textovej vrstvy).
 
+### Vnáranie podľa nadpisov
+
+Oba parsery budujú skutočný strom, nie plochý zoznam — každý ne-nadpisový chunk dostane `ParentId` nastavené na najbližšie otvorený nadpis v danom bode, a nadpis sa vnára pod najbližší nadpis prísne vyššej (nižšej číselne) úrovne:
+
+- **`DocxParser`** číta úroveň priamo zo style id (`Heading1` → úroveň 1, `Heading2` → úroveň 2, ...; heading štýl bez čísla na konci defaultne dostane úroveň 1).
+- **`PdfParser`** takúto explicitnú úroveň nemá, keďže PDF nadpisy sú len "riadok s dostatočne veľkým fontom" — preto si ju odvodí sám: každá distinct veľkosť fontu nájdená u nadpisov v dokumente sa zoradí od najväčšej po najmenšiu do úrovní 1, 2, 3, ... (`GetHeadingLevelsBySize`), čo je PDF obdoba Word štýlov `Heading1`/`Heading2`. Táto hierarchia prežíva aj cez zlom strany (na rozdiel od zlučovania riadkov do odsekov, ktoré sa resetuje na každej strane — pozri vyššie), takže sekcia otvorená na jednej strane je stále rodičom pre chunky na začiatku ďalšej.
+
+Oba parsery zdieľajú rovnaké pravidlo pre hierarchiu (`BuildAncestry` v každom z nich): pri novom nadpise sa odstránia (pop) všetky aktuálne otvorené nadpisy, ktorých úroveň je `>=` úrovni nového nadpisu (nadpis rovnakej úrovne je súrodenec, ukončuje rozsah predchádzajúceho), ale nižšie-číselné/väčšie (nadradené) nadpisy ostávajú otvorené — nový nadpis sa potom zaradí pod to, čo zostalo navrchu. `Heading2` sa vnorí pod predchádzajúci `Heading1`; druhý `Heading1` uzavrie všetky otvorené `Heading2` *aj* prvý `Heading1` a stane sa novým súrodencom na najvyššej úrovni.
+
+Aby toto fungovalo, identitu chunku priraďuje samotný parser, nie až fáza ukladania: `CreateChunkDto.Id` sa vygeneruje pri vzniku chunku (aby naň mohol neskorší súrodenec/potomok odkázať cez `ParentId` ešte pred uložením), a `ChunkMappings.MapDtosToChunks` toto id prenesie nezmenené namiesto generovania nového.
+
 ## Ako funguje AI obohacovanie
 
 `AiHelper` ([`Services/AiHelper.cs`](ContextEngine.Api/Services/AiHelper.cs)) urobí pri uploade dokumentu dve volania Claude, obe s modelom `claude-opus-5` na úrovni `Effort.Low` (lacná klasifikačná úloha, na ktorú sa neoplatí väčší model ani väčšie reasoning effort), s JSON output schémou, ktorá obmedzuje tvar odpovede:
@@ -376,7 +387,7 @@ ContextEngine.Api.Tests/              xUnit testovací projekt
 dotnet test ContextEngine.Api.sln
 ```
 
-101 testov, rozdelených na dva druhy:
+103 testov, rozdelených na dva druhy:
 
 - **Unit testy** (`ContextEngine.Api.Tests/Unit/`) — services, parsery a mappings testované izolovane s mockovanými závislosťami (Moq). Pokrývajú `ChunkService`, `DocumentService`, `SearchService`, `OnnxEmbeddingService`, `DocxParser`, `PdfParser`, `ChunkMappings` a `GlobalExceptionHandler`.
 - **API integračné testy** (`ContextEngine.Api.Tests/Api/`) — spúšťajú celú appku in-process cez `WebApplicationFactory<Program>` (pozri `ContextEngineApiFactory`), voči čerstvej dočasnej SQLite databáze pre každú testovaciu triedu, so skutočným `IAiHelper` nahradeným no-op `FakeAiHelper` (žiadne sieťové volania, na spustenie sady netreba API kľúč). Tieto testy defaultne aj obchádzajú autentifikáciu cez `TestAuthHandler` — falošnú schému, ktorá autentifikuje každý request ako fixného testovacieho používateľa — takže `ChunksControllerApiTests`, `DocumentsControllerApiTests` a `SearchControllerApiTests` sa môžu sústrediť čisto na business logiku namiesto plumbingu okolo tokenov.
@@ -390,8 +401,8 @@ Toto sú vedomé kompromisy pre fázu prototypu/lokálneho nástroja, nie chyby 
 - **Žiadna automatická migrácia pri štarte.** `dotnet ef database update` treba spustiť ručne po každom pulle novej migrácie. Zámer — auto-migrácia v `Program.cs` je bežná pasca pri nasadeniach s viacerými inštanciami — ale pre tento single-instance use case sa oplatí zautomatizovať v deploy skripte.
 - **`POST /api/documents` prijíma server-lokálnu cestu k súboru**, nie multipart upload. Toto je zámer pre lokálny nástroj, kde volajúci (napr. AI agent) a API zdieľajú súborový systém, ale znamená to, že volajúci môže prinútiť server prečítať *ktorýkoľvek* súbor, na ktorý má OS-úrovňové oprávnenie — nevystavuj tento endpoint mimo dôveryhodnej lokálnej/súkromnej siete bez pridania validácie cesty.
 - **Plochá autorizácia**: ktorýkoľvek prihlásený používateľ môže čítať/zapisovať/mazať ktorýkoľvek chunk alebo dokument — neexistuje vlastníctvo dát per-user. V poriadku pre nástroj s jedným operátorom; pre skutočne multi-tenant nasadenie by bolo treba stĺpec s vlastniacim používateľom + autorizačné kontroly.
-- **Tabuľky sa štrukturálne neparsujú.** Chunk typu `Table` obsahuje text celej tabuľky ako jeden blob (`InnerText`), nie jednotlivé riadky/bunky — `ChunkType.TableRow`/`TableCell` v enume existujú, ale zatiaľ ich nič neprodukuje.
-- **Strom `Chunk.Parent`/`Children` dnes žiadny z parserov nepoužíva** — každý chunk z volania `POST /api/documents` je súrodenec s `ParentId == null`. Self-referencing schéma je pripravená na vnáranie (napr. odseky pod svoj nadpis), akonáhle to nejaký parser implementuje.
+- **Tabuľky sa štrukturálne neparsujú.** Chunk typu `Table` obsahuje text celej tabuľky ako jeden blob (`InnerText`), nie jednotlivé riadky/bunky — `ChunkType.TableRow`/`TableCell` v enume existujú, ale zatiaľ ich nič neprodukuje. Tabuľka sa tiež nevnára pod nadpis tak ako odseky v `DocxParser` — pozri jeho zdrojový kód pre aktuálne správanie.
+- **Úrovne nadpisov v `PdfParser` sú odvodené z veľkosti fontu**, nie z explicitnej osnovy — dokument, ktorý (nezvyčajne) použije *rovnakú* veľkosť fontu pre dve koncepčne odlišné úrovne nadpisov, ich v strome zlúči do jednej úrovne; dokument s výrazným vizuálnym rozdielom vo veľkosti bežného textu (napr. veľký citát) môže byť nesprávne interpretovaný ako extra úroveň nadpisu. Toto je prirodzené rozšírenie existujúcej heuristiky pre detekciu nadpisov podľa fontu, s rovnakým úprimným upozornením: funguje dobre na bežne formátovaných PDF a môže zlyhať na nezvyčajných layoutoch.
 
 ## Poznámka k licencii
 

@@ -40,9 +40,15 @@ namespace ContextEngine.Api.Parsers
         /// Reads every page, reconstructs text lines from individual glyphs, classifies each
         /// non-empty line as <see cref="ChunkType.Heading"/> or <see cref="ChunkType.Paragraph"/>
         /// based on font size, and merges consecutive paragraph lines that belong to the same
-        /// paragraph into a single chunk. The result is a flat list — chunks are not yet nested
-        /// under their headings. Topics (document-wide) and tags (per chunk) are then filled in by
-        /// <see cref="IAiHelper"/>.
+        /// paragraph into a single chunk. Every non-heading chunk is nested (via
+        /// <see cref="CreateChunkDto.ParentId"/>) under the most recent heading at the time it was
+        /// encountered, and a heading is nested under the most recent heading with a strictly larger
+        /// font size — headings have no explicit outline level in a PDF the way "Heading1"/"Heading2"
+        /// do in Word, so distinct heading font sizes double as levels (bigger font = higher/outer
+        /// level), ranked document-wide by <see cref="GetHeadingLevelsBySize"/> before the main walk.
+        /// This nesting persists across page breaks (unlike paragraph merging, see below) — a
+        /// section started on one page still parents chunks at the top of the next. Topics
+        /// (document-wide) and tags (per chunk) are then filled in by <see cref="IAiHelper"/>.
         /// </summary>
         /// <param name="filePath">Path to the .pdf file to parse.</param>
         /// <returns>Chunks in document order, ready to be mapped and persisted.</returns>
@@ -62,6 +68,11 @@ namespace ContextEngine.Api.Parsers
 
             var typicalLineGap = GetTypicalLineGap(pagesLines);
             var paragraphBreakGapThreshold = typicalLineGap * ParagraphBreakGapMultiplier;
+            var headingLevelsBySize = GetHeadingLevelsBySize(pagesLines, bodyFontSize);
+
+            // Headings currently open above the chunk being processed, outermost (largest font) first.
+            // Kept at document scope, not per-page, so heading ancestry survives a page break.
+            var ancestors = new Stack<(int Level, Guid Id)>();
 
             foreach (var pageLines in pagesLines)
             {
@@ -89,7 +100,15 @@ namespace ContextEngine.Api.Parsers
                             pendingParagraph = null;
                         }
 
-                        chunks.Add(new CreateChunkDto { Type = ChunkType.Heading, Order = order++, Content = text });
+                        var level = headingLevelsBySize.TryGetValue(Math.Round(averageFontSize, 1), out var matchedLevel)
+                            ? matchedLevel
+                            : 1;
+                        var parentId = BuildAncestry(ancestors, level);
+                        var headingId = Guid.NewGuid();
+
+                        chunks.Add(new CreateChunkDto { Id = headingId, ParentId = parentId, Type = ChunkType.Heading, Order = order++, Content = text });
+                        ancestors.Push((level, headingId));
+
                         previousLineY = null;
                         continue;
                     }
@@ -115,7 +134,13 @@ namespace ContextEngine.Api.Parsers
                             chunks.Add(pendingParagraph);
                         }
 
-                        pendingParagraph = new CreateChunkDto { Type = ChunkType.Paragraph, Order = order++, Content = text };
+                        pendingParagraph = new CreateChunkDto
+                        {
+                            ParentId = ancestors.Count > 0 ? ancestors.Peek().Id : null,
+                            Type = ChunkType.Paragraph,
+                            Order = order++,
+                            Content = text
+                        };
                     }
 
                     previousLineY = line.Y;
@@ -165,6 +190,61 @@ namespace ContextEngine.Api.Parsers
             }
 
             return sum / line.Count;
+        }
+
+        /// <summary>
+        /// Ranks every distinct font size used by a heading line document-wide, largest first, into
+        /// outline levels 1, 2, 3, ... — the PDF equivalent of Word's "Heading1"/"Heading2" styles,
+        /// derived from font size since PDF glyphs carry no explicit outline level. Sizes are rounded
+        /// to one decimal (matching <see cref="GetMostCommonFontSize"/>'s bucketing) so trivially
+        /// different measurements of what is visually the same heading size land in one level.
+        /// </summary>
+        private static Dictionary<double, int> GetHeadingLevelsBySize(List<List<PdfLine>> pagesLines, double bodyFontSize)
+        {
+            var headingSizes = new HashSet<double>();
+
+            foreach (var pageLines in pagesLines)
+            {
+                foreach (var line in pageLines)
+                {
+                    if (string.IsNullOrWhiteSpace(BuildLineText(line.Letters)))
+                    {
+                        continue;
+                    }
+
+                    var averageFontSize = GetAverageFontSize(line.Letters);
+                    if (averageFontSize >= bodyFontSize * HeadingFontSizeMultiplier)
+                    {
+                        headingSizes.Add(Math.Round(averageFontSize, 1));
+                    }
+                }
+            }
+
+            return headingSizes
+                .OrderByDescending(size => size)
+                .Select((size, index) => (size, level: index + 1))
+                .ToDictionary(x => x.size, x => x.level);
+        }
+
+        /// <summary>
+        /// Pops any open heading whose level is not strictly less than <paramref name="level"/> - e.g.
+        /// hitting another level-2 heading closes out the previous one (same level: it's a sibling,
+        /// not a child) but leaves an enclosing level-1 heading open (lower level: still an ancestor) -
+        /// then returns what remains on top as the new heading's parent. Mirrors
+        /// <see cref="DocxParser"/>'s ancestry logic, just fed a font-size-derived level instead of a
+        /// Word style level.
+        /// </summary>
+        /// <param name="ancestors">Open headings, outermost first; mutated in place.</param>
+        /// <param name="level">Outline level of the heading about to be added.</param>
+        /// <returns>Id of the heading <paramref name="level"/> should nest under, or null if it belongs at the top.</returns>
+        private static Guid? BuildAncestry(Stack<(int Level, Guid Id)> ancestors, int level)
+        {
+            while (ancestors.Count > 0 && ancestors.Peek().Level >= level)
+            {
+                ancestors.Pop();
+            }
+
+            return ancestors.Count > 0 ? ancestors.Peek().Id : null;
         }
 
         /// <summary>

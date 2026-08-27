@@ -30,6 +30,52 @@ namespace ContextEngine.Api.Tests.Unit.Parsers
 
             Assert.Equal(ChunkType.Paragraph, chunks[2].Type);
             Assert.Equal("Second paragraph.", chunks[2].Content);
+
+            Assert.Null(chunks[0].ParentId);
+            Assert.Equal(chunks[0].Id, chunks[1].ParentId);
+            Assert.Equal(chunks[0].Id, chunks[2].ParentId);
+        }
+
+        [Fact]
+        public async Task ParseAsync_DocumentWithMultiLevelHeadings_NestsByFontSize()
+        {
+            var path = TrackFile(TestDocuments.CreatePdfWithMultiLevelHeadings());
+            var parser = new PdfParser(CreateAiHelperMock());
+
+            var chunks = await parser.ParseAsync(path);
+
+            Assert.Equal(8, chunks.Count);
+
+            var chapter1 = chunks[0];
+            var chapter1Intro = chunks[1];
+            var section11 = chunks[2];
+            var section11Body = chunks[3];
+            var section12 = chunks[4];
+            var section12Body = chunks[5];
+            var chapter2 = chunks[6];
+            var chapter2Intro = chunks[7];
+
+            Assert.Equal("Chapter 1", chapter1.Content);
+            Assert.Equal("Section 1.1", section11.Content);
+            Assert.Equal("Section 1.2", section12.Content);
+            Assert.Equal("Chapter 2", chapter2.Content);
+
+            // The 24pt heading has no parent; an 18pt heading nests under the preceding 24pt one; a
+            // paragraph nests under whichever heading most recently opened.
+            Assert.Null(chapter1.ParentId);
+            Assert.Equal(chapter1.Id, chapter1Intro.ParentId);
+            Assert.Equal(chapter1.Id, section11.ParentId);
+            Assert.Equal(section11.Id, section11Body.ParentId);
+
+            // A second 18pt heading closes out the first one (sibling, not child) but stays nested
+            // under the same still-open 24pt heading.
+            Assert.Equal(chapter1.Id, section12.ParentId);
+            Assert.Equal(section12.Id, section12Body.ParentId);
+
+            // A second 24pt heading closes out every open 18pt heading *and* the first 24pt heading,
+            // becoming a new top-level sibling with no parent of its own.
+            Assert.Null(chapter2.ParentId);
+            Assert.Equal(chapter2.Id, chapter2Intro.ParentId);
         }
 
         [Fact]

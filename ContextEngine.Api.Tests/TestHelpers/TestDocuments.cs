@@ -54,6 +54,51 @@ namespace ContextEngine.Api.Tests.TestHelpers
             return path;
         }
 
+        /// <summary>
+        /// Creates a .docx with two "Heading1"s, each containing two "Heading2"s, each followed by a
+        /// body paragraph — enough to exercise multi-level nesting (Heading2 under Heading1, a second
+        /// Heading2 as a sibling rather than a child, a second Heading1 closing out everything above
+        /// it) in <see cref="Api.Parsers.DocxParser"/>.
+        /// </summary>
+        /// <returns>Path to the generated file, in a new temp directory.</returns>
+        public static string CreateDocxWithMultiLevelHeadings()
+        {
+            var path = NewTempFilePath(".docx");
+
+            using var wordDocument = WordprocessingDocument.Create(path, WordprocessingDocumentType.Document);
+            var mainPart = wordDocument.AddMainDocumentPart();
+            mainPart.Document = new Document();
+            var body = mainPart.Document.AppendChild(new Body());
+
+            var stylesPart = mainPart.AddNewPart<StyleDefinitionsPart>();
+            stylesPart.Styles = new Styles(
+                new Style(
+                    new StyleName { Val = "heading 1" },
+                    new BasedOn { Val = "Normal" }
+                )
+                { Type = StyleValues.Paragraph, StyleId = "Heading1" },
+                new Style(
+                    new StyleName { Val = "heading 2" },
+                    new BasedOn { Val = "Normal" }
+                )
+                { Type = StyleValues.Paragraph, StyleId = "Heading2" }
+            );
+            stylesPart.Styles.Save();
+
+            AppendParagraph(body, "Chapter 1", "Heading1");
+            AppendParagraph(body, "Chapter intro.");
+            AppendParagraph(body, "Section 1.1", "Heading2");
+            AppendParagraph(body, "Section content.");
+            AppendParagraph(body, "Section 1.2", "Heading2");
+            AppendParagraph(body, "More content.");
+            AppendParagraph(body, "Chapter 2", "Heading1");
+            AppendParagraph(body, "Chapter 2 intro.");
+
+            mainPart.Document.Save();
+
+            return path;
+        }
+
         /// <summary>Creates a .docx containing only whitespace-only paragraphs (no extractable content).</summary>
         public static string CreateDocxWithOnlyEmptyParagraphs()
         {
@@ -101,6 +146,48 @@ namespace ContextEngine.Api.Tests.TestHelpers
             gfx.DrawString("and line three wrapped.", bodyFont, XBrushes.Black, new XPoint(40, y));
             y += 32;
             gfx.DrawString("Second paragraph.", bodyFont, XBrushes.Black, new XPoint(40, y));
+
+            pdfDocument.Save(path);
+
+            return path;
+        }
+
+        /// <summary>
+        /// Creates a PDF with two large (24pt) headings, each followed by a smaller (18pt) heading
+        /// and a body (11pt) paragraph — enough to exercise <see cref="Api.Parsers.PdfParser"/>'s
+        /// font-size-derived heading levels (24pt as level 1, 18pt as level 2) and the resulting
+        /// nesting, the PDF equivalent of <see cref="CreateDocxWithMultiLevelHeadings"/>. Every
+        /// paragraph is bounded by headings on both sides, so line-gap continuation logic never
+        /// comes into play here — only the heading levels matter for this fixture.
+        /// </summary>
+        /// <returns>Path to the generated file, in a new temp directory.</returns>
+        public static string CreatePdfWithMultiLevelHeadings()
+        {
+            var path = NewTempFilePath(".pdf");
+
+            using var pdfDocument = new PdfDocument();
+            var page = pdfDocument.AddPage();
+            var gfx = XGraphics.FromPdfPage(page);
+
+            var level1Font = new XFont("Arial", 24, XFontStyle.Bold);
+            var level2Font = new XFont("Arial", 18, XFontStyle.Bold);
+            var bodyFont = new XFont("Arial", 11, XFontStyle.Regular);
+
+            double y = 40;
+            void DrawLine(string text, XFont font)
+            {
+                gfx.DrawString(text, font, XBrushes.Black, new XPoint(40, y));
+                y += font.Size + 12;
+            }
+
+            DrawLine("Chapter 1", level1Font);
+            DrawLine("Chapter intro.", bodyFont);
+            DrawLine("Section 1.1", level2Font);
+            DrawLine("Section content.", bodyFont);
+            DrawLine("Section 1.2", level2Font);
+            DrawLine("More content.", bodyFont);
+            DrawLine("Chapter 2", level1Font);
+            DrawLine("Chapter 2 intro.", bodyFont);
 
             pdfDocument.Save(path);
 

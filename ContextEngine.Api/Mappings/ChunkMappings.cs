@@ -10,7 +10,8 @@ namespace ContextEngine.Api.Mappings
     {
         /// <summary>
         /// Maps parser output into new <see cref="Chunk"/> entities ready to be persisted.
-        /// Assigns a fresh <see cref="Chunk.Id"/> and creation/update timestamps to each chunk.
+        /// Carries over each <see cref="CreateChunkDto.Id"/> as-is (see its doc comment for why the
+        /// parser, not this method, owns id assignment) and stamps creation/update timestamps.
         /// </summary>
         /// <param name="dtos">Chunks produced by a document parser, in document order.</param>
         /// <param name="sourceId">Id of the source document these chunks belong to.</param>
@@ -25,7 +26,7 @@ namespace ContextEngine.Api.Mappings
             {
                 var chunk = new Chunk
                 {
-                    Id = Guid.NewGuid(),
+                    Id = dto.Id,
                     SourceId = sourceId,
                     ParentId = dto.ParentId,
                     Type = dto.Type,
