@@ -1,8 +1,11 @@
 using Anthropic;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.OpenApi.Models;
 using ContextEngine.Api;
 using ContextEngine.Api.Data;
 using ContextEngine.Api.Mappings;
+using ContextEngine.Api.Models.Identity;
 using ContextEngine.Api.Parsers;
 using ContextEngine.Api.Parsers.Interfaces;
 using ContextEngine.Api.Services;
@@ -15,6 +18,14 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddDbContext<ContextEngineDbContext>(options =>
     options.UseSqlite(builder.Configuration.GetConnectionString("DefaultConnection")));
+
+// ASP.NET Core Identity, issuing/validating opaque bearer tokens (AddIdentityApiEndpoints's
+// built-in scheme - see IdentityConstants.BearerScheme) so callers authenticate with a token from
+// POST /login instead of a browser cookie. No separate JWT package needed for this.
+builder.Services.AddIdentityApiEndpoints<ApplicationUser>()
+    .AddEntityFrameworkStores<ContextEngineDbContext>();
+
+builder.Services.AddAuthorization();
 
 builder.Services.AddControllers()
     // Serialize enums (e.g. ChunkType) as their string names instead of raw numbers, so
@@ -29,6 +40,25 @@ builder.Services.AddSwaggerGen(options =>
     var xmlPath = Path.Combine(AppContext.BaseDirectory, xmlFile);
 
     options.IncludeXmlComments(xmlPath);
+
+    // Lets Swagger UI's "Authorize" button attach the bearer token obtained from POST /login to
+    // every request it sends, since the [Authorize]-protected endpoints below all expect one.
+    options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
+    {
+        Name = "Authorization",
+        Type = SecuritySchemeType.Http,
+        Scheme = "Bearer",
+        BearerFormat = "JWT",
+        In = ParameterLocation.Header,
+        Description = "Paste the accessToken returned by POST /login."
+    });
+    options.AddSecurityRequirement(new OpenApiSecurityRequirement
+    {
+        {
+            new OpenApiSecurityScheme { Reference = new OpenApiReference { Type = ReferenceType.SecurityScheme, Id = "Bearer" } },
+            Array.Empty<string>()
+        }
+    });
 });
 
 builder.Services.AddScoped<IChunkService, ChunkService>();
@@ -70,7 +100,13 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 
+app.UseAuthentication();
 app.UseAuthorization();
+
+// Exposes /register, /login, /refresh etc. for ApplicationUser accounts (see
+// AddIdentityApiEndpoints above) - unauthenticated by design, since a caller needs them to obtain
+// a token in the first place.
+app.MapIdentityApi<ApplicationUser>();
 
 app.MapControllers();
 

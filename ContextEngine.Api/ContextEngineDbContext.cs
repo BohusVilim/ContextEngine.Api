@@ -1,14 +1,18 @@
+using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
 using ContextEngine.Api.Models.Chunk;
+using ContextEngine.Api.Models.Identity;
 using System.Text.Json;
 
 namespace ContextEngine.Api.Data
 {
     /// <summary>
-    /// EF Core database context for the ContextEngine SQLite store.
+    /// EF Core database context for the ContextEngine SQLite store. Also owns the ASP.NET Core
+    /// Identity schema (users, roles, tokens, etc. - via <see cref="IdentityDbContext{TUser}"/>) so
+    /// application data and account data live in the same database.
     /// </summary>
-    public class ContextEngineDbContext : DbContext
+    public class ContextEngineDbContext : IdentityDbContext<ApplicationUser>
     {
         public ContextEngineDbContext(DbContextOptions<ContextEngineDbContext> options)
             : base(options)
@@ -20,6 +24,10 @@ namespace ContextEngine.Api.Data
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
+            // Builds the Identity schema (AspNetUsers, AspNetRoles, etc.) first, so the
+            // configuration below only has to add the Chunk-specific pieces on top of it.
+            base.OnModelCreating(modelBuilder);
+
             // SQLite has no array/map column type, so List<string>/Dictionary<string,string> properties
             // are stored as JSON text. These comparers tell EF Core how to detect changes in the
             // deserialized collections (by value, not by reference) when tracking entities.

@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using ContextEngine.Api.DTOs;
 using ContextEngine.Api.Services.Interfaces;
@@ -7,6 +8,7 @@ namespace ContextEngine.Api.Controllers
     /// <summary>
     /// Manages source documents: upload/parsing, retrieval and deletion.
     /// </summary>
+    [Authorize]
     [ApiController]
     [Route("api/documents")]
     public class DocumentsController : ControllerBase

@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Data.Sqlite;
@@ -17,6 +18,14 @@ namespace ContextEngine.Api.Tests.Api
     public class ContextEngineApiFactory : WebApplicationFactory<Program>
     {
         private readonly string _dbPath = Path.Combine(Path.GetTempPath(), $"ContextEngineApiTests_{Guid.NewGuid()}.db");
+
+        /// <summary>
+        /// When true (the default), every request is auto-authenticated as a fixed test user (see
+        /// <see cref="TestAuthHandler"/>), so tests that exercise business logic don't each need to
+        /// register/login for a real token. AuthenticationApiTests overrides this to false to test
+        /// the real [Authorize]/login flow instead.
+        /// </summary>
+        protected virtual bool BypassAuthentication => true;
 
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
@@ -40,6 +49,15 @@ namespace ContextEngine.Api.Tests.Api
                 }
 
                 services.AddScoped<IAiHelper, FakeAiHelper>();
+
+                if (BypassAuthentication)
+                {
+                    // Re-pointing the default scheme at TestAuthHandler (rather than Identity's
+                    // bearer scheme from Program.cs) makes every request authenticate as a fixed
+                    // test user regardless of headers.
+                    services.AddAuthentication(TestAuthHandler.SchemeName)
+                        .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>(TestAuthHandler.SchemeName, options => { });
+                }
 
                 // Build a scoped provider just to create the schema before any request runs.
                 using var provider = services.BuildServiceProvider();

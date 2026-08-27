@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using ContextEngine.Api.Models.Requests;
 using ContextEngine.Api.Models.Responses;
@@ -8,6 +9,7 @@ namespace ContextEngine.Api.Controllers
     /// <summary>
     /// Searches and filters stored chunks.
     /// </summary>
+    [Authorize]
     [ApiController]
     [Route("api/search")]
     public class SearchController : ControllerBase
