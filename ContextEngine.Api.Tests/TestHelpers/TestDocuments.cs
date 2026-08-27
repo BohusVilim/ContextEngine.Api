@@ -99,6 +99,28 @@ namespace ContextEngine.Api.Tests.TestHelpers
             return path;
         }
 
+        /// <summary>Creates a .docx with a single one-row, two-cell table whose second cell is blank.</summary>
+        public static string CreateDocxWithTableContainingBlankCell()
+        {
+            var path = NewTempFilePath(".docx");
+
+            using var wordDocument = WordprocessingDocument.Create(path, WordprocessingDocumentType.Document);
+            var mainPart = wordDocument.AddMainDocumentPart();
+            mainPart.Document = new Document();
+            var body = mainPart.Document.AppendChild(new Body());
+
+            var table = new Table();
+            var row = new TableRow();
+            row.Append(new TableCell(new Paragraph(new Run(new Text("Only content")))));
+            row.Append(new TableCell(new Paragraph(new Run(new Text("   ")))));
+            table.Append(row);
+            body.AppendChild(table);
+
+            mainPart.Document.Save();
+
+            return path;
+        }
+
         /// <summary>Creates a .docx containing only whitespace-only paragraphs (no extractable content).</summary>
         public static string CreateDocxWithOnlyEmptyParagraphs()
         {

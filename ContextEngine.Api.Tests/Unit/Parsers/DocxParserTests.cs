@@ -19,7 +19,9 @@ namespace ContextEngine.Api.Tests.Unit.Parsers
 
             var chunks = await parser.ParseAsync(path);
 
-            Assert.Equal(6, chunks.Count);
+            // Heading, 2 paragraphs, heading, paragraph, then the table's structural sub-tree:
+            // Table -> TableRow -> 2x TableCell (see AddTable).
+            Assert.Equal(9, chunks.Count);
 
             Assert.Equal(ChunkType.Heading, chunks[0].Type);
             Assert.Equal("Introduction", chunks[0].Content);
@@ -37,9 +39,26 @@ namespace ContextEngine.Api.Tests.Unit.Parsers
             Assert.Equal(ChunkType.Paragraph, chunks[4].Type);
             Assert.Equal("Paragraph under the second heading.", chunks[4].Content);
 
-            Assert.Equal(ChunkType.Table, chunks[5].Type);
-            Assert.Equal("Cell ACell B", chunks[5].Content);
-            Assert.Equal(5, chunks[5].Order);
+            var tableChunk = chunks[5];
+            var rowChunk = chunks[6];
+            var cellA = chunks[7];
+            var cellB = chunks[8];
+
+            Assert.Equal(ChunkType.Table, tableChunk.Type);
+            Assert.Null(tableChunk.Content);
+            Assert.Equal(5, tableChunk.Order);
+
+            Assert.Equal(ChunkType.TableRow, rowChunk.Type);
+            Assert.Null(rowChunk.Content);
+            Assert.Equal(6, rowChunk.Order);
+
+            Assert.Equal(ChunkType.TableCell, cellA.Type);
+            Assert.Equal("Cell A", cellA.Content);
+            Assert.Equal(7, cellA.Order);
+
+            Assert.Equal(ChunkType.TableCell, cellB.Type);
+            Assert.Equal("Cell B", cellB.Content);
+            Assert.Equal(8, cellB.Order);
 
             // Both headings are "Heading1" (same level), so the second heading is a sibling of the
             // first, not its child - it closes out "Introduction" rather than nesting under it.
@@ -48,7 +67,33 @@ namespace ContextEngine.Api.Tests.Unit.Parsers
             Assert.Equal(chunks[0].Id, chunks[2].ParentId);
             Assert.Null(chunks[3].ParentId);
             Assert.Equal(chunks[3].Id, chunks[4].ParentId);
-            Assert.Equal(chunks[3].Id, chunks[5].ParentId);
+
+            // The table nests under the last open heading, same as a paragraph would; the row nests
+            // under the table; each cell nests under its row.
+            Assert.Equal(chunks[3].Id, tableChunk.ParentId);
+            Assert.Equal(tableChunk.Id, rowChunk.ParentId);
+            Assert.Equal(rowChunk.Id, cellA.ParentId);
+            Assert.Equal(rowChunk.Id, cellB.ParentId);
+        }
+
+        [Fact]
+        public async Task ParseAsync_TableWithBlankCell_SkipsBlankCellButKeepsRow()
+        {
+            var path = TrackFile(TestDocuments.CreateDocxWithTableContainingBlankCell());
+            var parser = new DocxParser(CreateAiHelperMock());
+
+            var chunks = await parser.ParseAsync(path);
+
+            // Table -> TableRow -> 1x TableCell (the blank second cell is skipped, but the row itself
+            // is kept since a row is structure, not content).
+            Assert.Equal(3, chunks.Count);
+
+            Assert.Equal(ChunkType.Table, chunks[0].Type);
+            Assert.Equal(ChunkType.TableRow, chunks[1].Type);
+            Assert.Equal(ChunkType.TableCell, chunks[2].Type);
+            Assert.Equal("Only content", chunks[2].Content);
+            Assert.Equal(chunks[0].Id, chunks[1].ParentId);
+            Assert.Equal(chunks[1].Id, chunks[2].ParentId);
         }
 
         [Fact]

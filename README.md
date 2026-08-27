@@ -99,7 +99,7 @@ There's a single core entity, `Chunk` ([`Models/Chunk/Chunk.cs`](ContextEngine.A
 | `Metadata` | `Dictionary<string,string>` | Free-form key/value bag, currently unused by parsers but available for future extension. Stored as a JSON text column. |
 | `CreatedAt` / `UpdatedAt` | `DateTimeOffset` | UTC timestamps. |
 
-`ChunkType` ([`Enums.cs`](ContextEngine.Api/Enums.cs)) is the structural role a chunk plays: `Document, Section, Heading, Paragraph, List, ListItem, Table, TableRow, TableCell, Definition, Quote, Note, Warning, Footnote, Reference, Code, Unknown`. Only `Heading`, `Paragraph` and `Table` are actually produced by the current parsers; the rest of the enum exists for richer future parsing.
+`ChunkType` ([`Enums.cs`](ContextEngine.Api/Enums.cs)) is the structural role a chunk plays: `Document, Section, Heading, Paragraph, List, ListItem, Table, TableRow, TableCell, Definition, Quote, Note, Warning, Footnote, Reference, Code, Unknown`. `Heading`, `Paragraph`, `Table`, `TableRow` and `TableCell` are produced by `DocxParser`; `PdfParser` only ever produces `Heading`/`Paragraph` (it doesn't detect tables at all — see [Known limitations](#known-limitations)). The rest of the enum exists for richer future parsing.
 
 **Why JSON columns instead of proper relational tables for `Topics`/`Tags`/`Metadata`/`Embedding`**: SQLite has no native array/map column type, so EF Core serializes these `List<T>`/`Dictionary<K,V>` properties to a single `TEXT` column per property (configured in `ContextEngineDbContext.OnModelCreating`, with custom `ValueComparer`s so EF's change tracking still works on the deserialized collections). The trade-off — and the biggest scalability caveat in this codebase — is that **`Topics`/`Tags`/date-range filters cannot be pushed down to SQL**; every query that filters on them loads the full `Chunks` table into memory first (see `SearchService.SearchAsync`, `ChunkService.GetChunksByTopicAsync`, etc.). Fine at prototype scale, but the first thing to revisit if the chunk count grows large — see [Known limitations](#known-limitations).
 
@@ -290,7 +290,7 @@ Both parsers implement the same contract — `Task<List<CreateChunkDto>> ParseAs
 
 **`DocxParser`** ([`Parsers/DocxParser.cs`](ContextEngine.Api/Parsers/DocxParser.cs)) walks the Word document body via the Open XML SDK:
 - A paragraph styled `HeadingX` (any level) → `ChunkType.Heading`; any other non-empty paragraph → `ChunkType.Paragraph`.
-- A table → one `ChunkType.Table` chunk holding the table's full inner text (not yet split into rows/cells — see [Known limitations](#known-limitations)).
+- A table → a structural sub-tree, not one blob: a content-less `ChunkType.Table` chunk, with one content-less `ChunkType.TableRow` child per row, each holding one `ChunkType.TableCell` child per non-empty cell (blank cells are skipped, same as a blank paragraph; a row is kept even if every one of its cells was blank, since a row is structure, not content). A cell's position within its row — and a row's position within the table — is recoverable purely from `Order`, since rows/cells are numbered in document order like everything else; there's no separate column-index field. See `DocxParser.AddTable`.
 - Empty paragraphs are skipped.
 
 **`PdfParser`** ([`Parsers/PdfParser.cs`](ContextEngine.Api/Parsers/PdfParser.cs)) has a harder problem: PDF has no semantic structure at all, just glyphs with X/Y coordinates. It reconstructs structure with two heuristics:
@@ -388,7 +388,7 @@ ContextEngine.Api.Tests/              xUnit test project
 dotnet test ContextEngine.Api.sln
 ```
 
-103 tests, split into two kinds:
+104 tests, split into two kinds:
 
 - **Unit tests** (`ContextEngine.Api.Tests/Unit/`) — services, parsers and mappings tested in isolation with mocked dependencies (Moq). Cover `ChunkService`, `DocumentService`, `SearchService`, `OnnxEmbeddingService`, `DocxParser`, `PdfParser`, `ChunkMappings`, and `GlobalExceptionHandler`.
 - **API integration tests** (`ContextEngine.Api.Tests/Api/`) — boot the whole app in-process via `WebApplicationFactory<Program>` (see `ContextEngineApiFactory`), against a fresh temp-file SQLite database per test class, with the real `IAiHelper` swapped for a no-op `FakeAiHelper` (no network calls, no API key needed to run the suite). By default these tests also bypass authentication via `TestAuthHandler` — a fake scheme that authenticates every request as a fixed test user — so `ChunksControllerApiTests`, `DocumentsControllerApiTests` and `SearchControllerApiTests` can focus purely on business-logic behavior instead of token plumbing.
@@ -402,7 +402,7 @@ These are conscious trade-offs for a prototype/local-tool stage, not bugs — li
 - **No automatic migration on startup.** `dotnet ef database update` must be run by hand after pulling a new migration. Deliberate — auto-migrating in `Program.cs` is a common footgun in multi-instance deployments — but worth automating in a deploy script for this single-instance use case.
 - **`POST /api/documents` takes a server-local file path**, not a multipart upload. This is by design for a local tool the caller (e.g. an AI agent) and the API share a filesystem with, but it means the caller can make the server read *any* file it has OS-level permission to read — don't expose this endpoint beyond a trusted local/private network without adding path validation.
 - **Flat authorization**: any authenticated user can read/write/delete any chunk or document — there's no per-user data ownership. Fine for a single-operator tool; would need an owning-user column + authorization checks for a genuinely multi-tenant deployment.
-- **Tables aren't structurally parsed.** A `Table` chunk holds the entire table's text as one blob (`InnerText`), not individual rows/cells — `ChunkType.TableRow`/`TableCell` exist in the enum but nothing produces them yet. A table also isn't nested under a heading the way paragraphs are in `DocxParser` — see its source for the current handling.
+- **`PdfParser` doesn't detect tables at all** — unlike `.docx`, a PDF has no native table markup, just glyph positions, so recognizing a table would need a separate column/row-alignment heuristic on top of the existing heading/paragraph ones. `.docx` tables, in contrast, are fully structurally parsed (`ChunkType.Table` → `TableRow` → `TableCell`, see [How document parsing works](#how-document-parsing-works)).
 - **`PdfParser`'s heading levels are inferred from font size**, not an explicit outline — a document that (unusually) uses the *same* font size for two conceptually different heading levels will have them collapse into one level in the tree; a document with meaningful visual variation in in-body text size (e.g. a large pull-quote) could be misread as an extra heading level. This is a natural extension of the existing font-size heading heuristic, with the same honest caveat: it works well for conventionally-formatted PDFs and can misclassify unusual layouts.
 
 ## License notes

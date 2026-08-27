@@ -20,13 +20,17 @@ namespace ContextEngine.Api.Parsers
         }
 
         /// <summary>
-        /// Walks the document body and produces one chunk per non-empty paragraph or table.
-        /// Paragraphs styled as "HeadingX" become <see cref="ChunkType.Heading"/>, other
-        /// non-empty paragraphs become <see cref="ChunkType.Paragraph"/>, and tables become
-        /// <see cref="ChunkType.Table"/> (with their full text as content, not yet split into rows/cells).
-        /// Every non-heading chunk is nested (via <see cref="CreateChunkDto.ParentId"/>) under the
-        /// most recent heading at the time it was encountered, and a heading is nested under the most
-        /// recent heading of a strictly lower level (so "Heading2" nests under the preceding
+        /// Walks the document body and produces one chunk per non-empty paragraph, plus a structural
+        /// sub-tree per table. Paragraphs styled as "HeadingX" become <see cref="ChunkType.Heading"/>,
+        /// other non-empty paragraphs become <see cref="ChunkType.Paragraph"/>. A table becomes a
+        /// content-less <see cref="ChunkType.Table"/> chunk with one content-less
+        /// <see cref="ChunkType.TableRow"/> child per row, each holding one <see cref="ChunkType.TableCell"/>
+        /// child per non-empty cell (see <see cref="AddTable"/>) — the table's own text lives only on
+        /// its cells, not duplicated onto the row/table containers, the same way a heading's own text
+        /// doesn't duplicate onto the chunks nested under it.
+        /// Every non-heading top-level chunk is nested (via <see cref="CreateChunkDto.ParentId"/>)
+        /// under the most recent heading at the time it was encountered, and a heading is nested under
+        /// the most recent heading of a strictly lower level (so "Heading2" nests under the preceding
         /// "Heading1", and a new "Heading1" closes out any open "Heading2"/etc. and becomes a
         /// top-level sibling) - see <see cref="BuildAncestry"/>. Topics (document-wide) and tags
         /// (per chunk) are then filled in by <see cref="IAiHelper"/>.
@@ -92,13 +96,8 @@ namespace ContextEngine.Api.Parsers
                 }
                 else if (element is Table table)
                 {
-                    chunks.Add(new CreateChunkDto
-                    {
-                        ParentId = ancestors.Count > 0 ? ancestors.Peek().Id : null,
-                        Type = ChunkType.Table,
-                        Order = order++,
-                        Content = table.InnerText
-                    });
+                    Guid? tableParentId = ancestors.Count > 0 ? ancestors.Peek().Id : null;
+                    AddTable(chunks, table, tableParentId, ref order);
                 }
             }
 
@@ -116,6 +115,43 @@ namespace ContextEngine.Api.Parsers
             }
 
             return chunks;
+        }
+
+        /// <summary>
+        /// Appends a table's structural sub-tree to <paramref name="chunks"/>: a content-less
+        /// <see cref="ChunkType.Table"/> chunk, one content-less <see cref="ChunkType.TableRow"/>
+        /// child per row (kept even if every cell in it is blank, since a row is structure, not
+        /// content), and one <see cref="ChunkType.TableCell"/> child per non-empty cell in that row
+        /// (blank cells are skipped, same as a blank paragraph). A cell's left-to-right position
+        /// within its row - and a row's position within the table - is recoverable from
+        /// <see cref="CreateChunkDto.Order"/> alone, since both are walked and numbered in document
+        /// order; no separate column-index field is needed.
+        /// </summary>
+        /// <param name="chunks">List every produced chunk is appended to.</param>
+        /// <param name="table">The table element being parsed.</param>
+        /// <param name="tableParentId">Id of the heading the table itself nests under, if any.</param>
+        /// <param name="order">Running document-order counter, advanced by one per chunk added.</param>
+        private static void AddTable(List<CreateChunkDto> chunks, Table table, Guid? tableParentId, ref int order)
+        {
+            var tableId = Guid.NewGuid();
+            chunks.Add(new CreateChunkDto { Id = tableId, ParentId = tableParentId, Type = ChunkType.Table, Order = order++ });
+
+            foreach (var row in table.Elements<TableRow>())
+            {
+                var rowId = Guid.NewGuid();
+                chunks.Add(new CreateChunkDto { Id = rowId, ParentId = tableId, Type = ChunkType.TableRow, Order = order++ });
+
+                foreach (var cell in row.Elements<TableCell>())
+                {
+                    var cellText = cell.InnerText;
+                    if (string.IsNullOrWhiteSpace(cellText))
+                    {
+                        continue;
+                    }
+
+                    chunks.Add(new CreateChunkDto { ParentId = rowId, Type = ChunkType.TableCell, Order = order++, Content = cellText });
+                }
+            }
         }
 
         /// <summary>Determines whether a paragraph style id represents a Word heading style (e.g. "Heading1").</summary>
