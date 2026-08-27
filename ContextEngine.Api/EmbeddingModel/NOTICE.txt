@@ -1,0 +1,9 @@
+Model: all-MiniLM-L6-v2 (quantized ONNX export)
+Source: https://huggingface.co/Xenova/all-MiniLM-L6-v2
+Original model: https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2
+License: Apache License 2.0
+
+These two files (model.onnx, vocab.txt) are redistributed unmodified from the
+source above and are loaded at runtime by OnnxEmbeddingService via the
+Microsoft.SemanticKernel.Connectors.Onnx package. See IEmbeddingService for
+how they're used.

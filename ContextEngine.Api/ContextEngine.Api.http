@@ -1,0 +1,6 @@
+@ContextEngine.Api_HostAddress = http://localhost:5209
+
+GET {{ContextEngine.Api_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
