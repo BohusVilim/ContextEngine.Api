@@ -163,10 +163,7 @@ namespace ContextEngine.Api.Tests.Unit.Parsers
         {
             var mock = new Mock<IAiHelper>();
 
-            mock.Setup(a => a.CreateTopicsAsync(It.IsAny<List<CreateChunkDto>>(), It.IsAny<CancellationToken>()))
-                .ReturnsAsync(new List<string>());
-
-            mock.Setup(a => a.CreateTagsAsync(It.IsAny<List<CreateChunkDto>>(), It.IsAny<CancellationToken>()))
+            mock.Setup(a => a.CreateTopicsAndTagsAsync(It.IsAny<List<CreateChunkDto>>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync((List<CreateChunkDto> chunks, CancellationToken _) =>
                 {
                     var tags = new List<List<string>>();
@@ -175,7 +172,7 @@ namespace ContextEngine.Api.Tests.Unit.Parsers
                         tags.Add(new List<string>());
                     }
 
-                    return tags;
+                    return new TopicsAndTags { Topics = new List<string>(), Tags = tags };
                 });
 
             return mock.Object;

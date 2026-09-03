@@ -13,8 +13,11 @@ namespace ContextEngine.Api.Services
         /// <summary>Model used for topic/tag generation. Cheap classification task, not worth a larger model.</summary>
         private const string ModelId = "claude-haiku-4-5-20251001";
 
-        private const int TopicsMaxTokens = 1024;
-        private const int TagsMaxTokens = 4096;
+        /// <summary>
+        /// Generous enough for a large document's per-chunk tags (the dominant part of the response);
+        /// the handful of extra document-level topics add negligible overhead on top of that.
+        /// </summary>
+        private const int MaxTokens = 4096;
 
         private static readonly JsonSerializerOptions DeserializeOptions = new()
         {
@@ -31,73 +34,36 @@ namespace ContextEngine.Api.Services
         }
 
         /// <inheritdoc/>
-        public async Task<List<string>> CreateTopicsAsync(List<CreateChunkDto> chunks, CancellationToken cancellationToken = default)
-        {
-            var documentText = BuildDocumentText(chunks);
-            if (string.IsNullOrWhiteSpace(documentText))
-            {
-                return new List<string>();
-            }
-
-            var existingTopics = (await _searchService.GetSearchableOptionsAsync(cancellationToken)).Topics;
-
-            var parameters = new MessageCreateParams
-            {
-                Model = ModelId,
-                MaxTokens = TopicsMaxTokens,
-                OutputConfig = new OutputConfig { Effort = Effort.Low, Format = BuildTopicsFormat() },
-                Messages =
-                [
-                    new()
-                    {
-                        Role = Role.User,
-                        Content = "Identify the 1 to 5 main topics covered by the following document. " +
-                            "Topics should be short (one to three words) and describe subject matter, not document structure.\n\n" +
-                            BuildReuseInstruction("topics", existingTopics) + "\n\n" +
-                            "Document:\n" + documentText
-                    }
-                ]
-            };
-
-            var response = await _client.Messages.Create(parameters, cancellationToken);
-            var json = GetResponseText(response);
-
-            var result = JsonSerializer.Deserialize<TopicsResult>(json, DeserializeOptions);
-            if (result == null || result.Topics == null)
-            {
-                return new List<string>();
-            }
-
-            return result.Topics;
-        }
-
-        /// <inheritdoc/>
-        public async Task<List<List<string>>> CreateTagsAsync(List<CreateChunkDto> chunks, CancellationToken cancellationToken = default)
+        public async Task<TopicsAndTags> CreateTopicsAndTagsAsync(List<CreateChunkDto> chunks, CancellationToken cancellationToken = default)
         {
             var emptyTags = BuildEmptyTags(chunks.Count);
 
-            var documentText = BuildDocumentText(chunks);
-            if (string.IsNullOrWhiteSpace(documentText))
+            if (!chunks.Any(c => !string.IsNullOrWhiteSpace(c.Content)))
             {
-                return emptyTags;
+                return new TopicsAndTags { Topics = new List<string>(), Tags = emptyTags };
             }
 
-            var existingTags = (await _searchService.GetSearchableOptionsAsync(cancellationToken)).Tags;
+            // Fetches both existing topics and existing tags in one call, matching the one-call-covers-
+            // both-concerns approach this method itself takes below.
+            var existingOptions = await _searchService.GetSearchableOptionsAsync(cancellationToken);
 
             var parameters = new MessageCreateParams
             {
                 Model = ModelId,
-                MaxTokens = TagsMaxTokens,
-                OutputConfig = new OutputConfig { Effort = Effort.Low, Format = BuildTagsFormat() },
+                MaxTokens = MaxTokens,
+                OutputConfig = new OutputConfig { Effort = Effort.Low, Format = BuildTopicsAndTagsFormat() },
                 Messages =
                 [
                     new()
                     {
                         Role = Role.User,
-                        Content = "Tag each numbered chunk below with 1 to 5 short, specific tags. " +
+                        Content = "First, identify the 1 to 5 main topics covered by the whole document below. " +
+                            "Topics should be short (one to three words) and describe subject matter, not document structure.\n" +
+                            BuildReuseInstruction("topics", existingOptions.Topics) + "\n\n" +
+                            "Second, tag each numbered chunk below with 1 to 5 short, specific tags. " +
                             "Use the full set of chunks as context so a chunk's tags can reflect its role " +
-                            "in the document, not just its isolated text.\n\n" +
-                            BuildReuseInstruction("tags", existingTags) + "\n\n" +
+                            "in the document, not just its isolated text.\n" +
+                            BuildReuseInstruction("tags", existingOptions.Tags) + "\n\n" +
                             BuildIndexedChunkText(chunks)
                     }
                 ]
@@ -106,21 +72,24 @@ namespace ContextEngine.Api.Services
             var response = await _client.Messages.Create(parameters, cancellationToken);
             var json = GetResponseText(response);
 
-            var result = JsonSerializer.Deserialize<TagsResult>(json, DeserializeOptions);
-            if (result == null || result.ChunkTags == null)
+            var result = JsonSerializer.Deserialize<TopicsAndTagsResult>(json, DeserializeOptions);
+            if (result == null)
             {
-                return emptyTags;
+                return new TopicsAndTags { Topics = new List<string>(), Tags = emptyTags };
             }
 
-            foreach (var entry in result.ChunkTags)
+            if (result.ChunkTags != null)
             {
-                if (entry.Index >= 0 && entry.Index < emptyTags.Count && entry.Tags != null)
+                foreach (var entry in result.ChunkTags)
                 {
-                    emptyTags[entry.Index] = entry.Tags;
+                    if (entry.Index >= 0 && entry.Index < emptyTags.Count && entry.Tags != null)
+                    {
+                        emptyTags[entry.Index] = entry.Tags;
+                    }
                 }
             }
 
-            return emptyTags;
+            return new TopicsAndTags { Topics = result.Topics ?? new List<string>(), Tags = emptyTags };
         }
 
         /// <summary>
@@ -140,22 +109,6 @@ namespace ContextEngine.Api.Services
             return $"Existing {label} already in use elsewhere in the system: {string.Join(", ", existingValues)}.\n" +
                 $"Reuse one of these whenever it's a genuinely good fit. Only introduce a new {label.TrimEnd('s')} " +
                 $"when none of the existing ones are truly relevant.";
-        }
-
-        /// <summary>Concatenates every chunk's content into one document-level text block.</summary>
-        private static string BuildDocumentText(List<CreateChunkDto> chunks)
-        {
-            var builder = new StringBuilder();
-
-            foreach (var chunk in chunks)
-            {
-                if (!string.IsNullOrWhiteSpace(chunk.Content))
-                {
-                    builder.AppendLine(chunk.Content);
-                }
-            }
-
-            return builder.ToString().Trim();
         }
 
         /// <summary>Renders every chunk as "Chunk {index}: {content}", so the model can key its response by index.</summary>
@@ -198,8 +151,8 @@ namespace ContextEngine.Api.Services
             return string.Empty;
         }
 
-        /// <summary>Builds the JSON schema that constrains <see cref="CreateTopicsAsync"/>'s response.</summary>
-        private static JsonOutputFormat BuildTopicsFormat()
+        /// <summary>Builds the JSON schema that constrains <see cref="CreateTopicsAndTagsAsync"/>'s response.</summary>
+        private static JsonOutputFormat BuildTopicsAndTagsFormat()
         {
             return new JsonOutputFormat
             {
@@ -208,24 +161,7 @@ namespace ContextEngine.Api.Services
                     ["type"] = JsonSerializer.SerializeToElement("object"),
                     ["properties"] = JsonSerializer.SerializeToElement(new
                     {
-                        topics = new { type = "array", items = new { type = "string" } }
-                    }),
-                    ["required"] = JsonSerializer.SerializeToElement(new[] { "topics" }),
-                    ["additionalProperties"] = JsonSerializer.SerializeToElement(false)
-                }
-            };
-        }
-
-        /// <summary>Builds the JSON schema that constrains <see cref="CreateTagsAsync"/>'s response.</summary>
-        private static JsonOutputFormat BuildTagsFormat()
-        {
-            return new JsonOutputFormat
-            {
-                Schema = new Dictionary<string, JsonElement>
-                {
-                    ["type"] = JsonSerializer.SerializeToElement("object"),
-                    ["properties"] = JsonSerializer.SerializeToElement(new
-                    {
+                        topics = new { type = "array", items = new { type = "string" } },
                         chunkTags = new
                         {
                             type = "array",
@@ -242,21 +178,16 @@ namespace ContextEngine.Api.Services
                             }
                         }
                     }),
-                    ["required"] = JsonSerializer.SerializeToElement(new[] { "chunkTags" }),
+                    ["required"] = JsonSerializer.SerializeToElement(new[] { "topics", "chunkTags" }),
                     ["additionalProperties"] = JsonSerializer.SerializeToElement(false)
                 }
             };
         }
 
-        /// <summary>Deserialization target for <see cref="CreateTopicsAsync"/>'s structured response.</summary>
-        private class TopicsResult
+        /// <summary>Deserialization target for <see cref="CreateTopicsAndTagsAsync"/>'s structured response.</summary>
+        private class TopicsAndTagsResult
         {
             public List<string>? Topics { get; set; }
-        }
-
-        /// <summary>Deserialization target for <see cref="CreateTagsAsync"/>'s structured response.</summary>
-        private class TagsResult
-        {
             public List<ChunkTagsEntry>? ChunkTags { get; set; }
         }
 

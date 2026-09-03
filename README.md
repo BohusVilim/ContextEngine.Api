@@ -39,8 +39,8 @@ The core idea: point the API at a `.docx` or `.pdf` file, and it becomes queryab
                                                                         ▼
                                                           ┌──────────────────────┐
                                                           │ AiHelper (Claude)     │  document-level topics
-                                                          │ CreateTopicsAsync /   │  + per-chunk tags
-                                                          │ CreateTagsAsync       │
+                                                          │ CreateTopicsAndTags-  │  + per-chunk tags,
+                                                          │ Async                 │  one combined call
                                                           └──────────────────────┘
                                                                         │
                                                                         ▼
@@ -316,12 +316,11 @@ Chunk identity for this to work is assigned by the parser itself, not at persist
 
 ## How AI enrichment works
 
-`AiHelper` ([`Services/AiHelper.cs`](ContextEngine.Api/Services/AiHelper.cs)) makes two Claude calls per uploaded document, both using model `claude-opus-5` at `Effort.Low` (a cheap classification task, not worth a larger model or more reasoning effort) with a JSON output schema that constrains the response shape:
+`AiHelper` ([`Services/AiHelper.cs`](ContextEngine.Api/Services/AiHelper.cs)) makes **one** Claude call per uploaded document, using model `claude-haiku-4-5-20251001` at `Effort.Low` (a cheap classification task, not worth a larger model or more reasoning effort) with a JSON output schema that constrains the response shape.
 
-1. **`CreateTopicsAsync`** — one call, given the whole document's concatenated text, asking for 1–5 short topics. The prompt lists every topic already in use elsewhere in the system (from `SearchService.GetSearchableOptionsAsync`) and instructs the model to reuse one of them when it's a genuinely good fit, only inventing a new one otherwise — this keeps the topic vocabulary from fragmenting into near-duplicates across documents (e.g. "Billing" vs. "Invoicing" vs. "Payments").
-2. **`CreateTagsAsync`** — one call, given every chunk indexed (`Chunk 0: ...`, `Chunk 1: ...`) so the model has whole-document context, asking for 1–5 tags per chunk, keyed back by index. Same reuse-existing-values instruction as topics.
+`CreateTopicsAndTagsAsync` sends the document once — every chunk indexed (`Chunk 0: ...`, `Chunk 1: ...`) so the model has whole-document context — and asks for both things in the same response: 1–5 short document-level topics, and 1–5 tags per chunk keyed back by index. Earlier this was two separate calls (one for topics, one for tags), each sending the document's text again; merging them into one call roughly halves the input tokens billed per upload, since the document is only transmitted once. The prompt lists every topic/tag already in use elsewhere in the system (from `SearchService.GetSearchableOptionsAsync`) and instructs the model to reuse one of them when it's a genuinely good fit, only inventing a new one otherwise — this keeps the topic/tag vocabulary from fragmenting into near-duplicates across documents (e.g. "Billing" vs. "Invoicing" vs. "Payments").
 
-If the document has no non-blank content, both calls are skipped and empty topics/tags are returned — no wasted API call. `DocxParser`/`PdfParser` call these two methods sequentially (topics, then tags) right before returning their parsed chunks; `DocumentService` computes embeddings afterward, once topics/tags are already attached — and does so for every chunk concurrently (`Parallel.ForEachAsync`, capped at `Environment.ProcessorCount`) rather than one at a time, since each chunk's embedding only depends on its own text. For a document with hundreds of chunks that's the difference between a handful of seconds and several minutes.
+If the document has no non-blank content, the call is skipped and empty topics/tags are returned — no wasted API call. `DocxParser`/`PdfParser` call this method right before returning their parsed chunks; `DocumentService` computes embeddings afterward, once topics/tags are already attached — and does so for every chunk concurrently (`Parallel.ForEachAsync`, capped at `Environment.ProcessorCount`) rather than one at a time, since each chunk's embedding only depends on its own text. For a document with hundreds of chunks that's the difference between a handful of seconds and several minutes.
 
 ## How semantic search works
 

@@ -103,16 +103,15 @@ namespace ContextEngine.Api.Parsers
             }
 
             // Topics apply to the whole document, so the same list is copied onto every chunk.
-            var topics = await _aiHelper.CreateTopicsAsync(chunks, cancellationToken);
+            var topicsAndTags = await _aiHelper.CreateTopicsAndTagsAsync(chunks, cancellationToken);
             foreach (var chunk in chunks)
             {
-                chunk.Topics = topics;
+                chunk.Topics = topicsAndTags.Topics;
             }
 
-            var tags = await _aiHelper.CreateTagsAsync(chunks, cancellationToken);
             for (var i = 0; i < chunks.Count; i++)
             {
-                chunks[i].Tags = tags[i];
+                chunks[i].Tags = topicsAndTags.Tags[i];
             }
 
             return chunks;

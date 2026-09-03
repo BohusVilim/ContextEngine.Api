@@ -8,31 +8,30 @@ namespace ContextEngine.Api.Services.Interfaces
     public interface IAiHelper
     {
         /// <summary>
-        /// Generates a small set of topics that summarize the whole document, from its full content.
-        /// Reuses topics already present on other stored chunks wherever one of them is a good fit,
-        /// and only introduces a new topic when none of the existing ones are truly relevant, so the
-        /// set of topics in use across the system stays small instead of growing one-off variants of
-        /// the same idea per document.
-        /// </summary>
-        /// <param name="chunks">Every chunk parsed from the document, in document order.</param>
-        /// <param name="cancellationToken">Propagated to the underlying Anthropic API call.</param>
-        /// <returns>Document-level topics, or an empty list if the document has no content.</returns>
-        Task<List<string>> CreateTopicsAsync(List<CreateChunkDto> chunks, CancellationToken cancellationToken = default);
-
-        /// <summary>
-        /// Generates tags for each chunk, with the full document given as context so tags can
-        /// reflect a chunk's role in the document, not just its own text in isolation. Reuses tags
-        /// already present on other stored chunks wherever one of them is a good fit, and only
-        /// introduces a new tag when none of the existing ones are truly relevant, so the set of tags
-        /// in use across the system stays small instead of growing one-off variants of the same idea
-        /// per document.
+        /// Generates a small set of document-level topics and, in the same call, a small set of tags
+        /// for each chunk - one combined call rather than two, so the document's text is only sent to
+        /// the model once instead of once per concern. Reuses topic/tag values already present on
+        /// other stored chunks wherever one of them is a good fit, and only introduces a new one when
+        /// none of the existing ones are truly relevant, so the sets of topics/tags in use across the
+        /// system stay small instead of growing one-off variants of the same idea per document.
         /// </summary>
         /// <param name="chunks">Every chunk parsed from the document, in document order.</param>
         /// <param name="cancellationToken">Propagated to the underlying Anthropic API call.</param>
         /// <returns>
-        /// Tags per chunk, in the same order and count as <paramref name="chunks"/>
-        /// (<c>result[i]</c> are the tags for <c>chunks[i]</c>).
+        /// Document-level topics (empty if the document has no content) and per-chunk tags, in the
+        /// same order and count as <paramref name="chunks"/> (<c>Tags[i]</c> are the tags for
+        /// <c>chunks[i]</c>).
         /// </returns>
-        Task<List<List<string>>> CreateTagsAsync(List<CreateChunkDto> chunks, CancellationToken cancellationToken = default);
+        Task<TopicsAndTags> CreateTopicsAndTagsAsync(List<CreateChunkDto> chunks, CancellationToken cancellationToken = default);
+    }
+
+    /// <summary>Result of <see cref="IAiHelper.CreateTopicsAndTagsAsync"/>.</summary>
+    public class TopicsAndTags
+    {
+        /// <summary>Document-level topics.</summary>
+        public List<string> Topics { get; set; } = new();
+
+        /// <summary>Per-chunk tags, in the same order and count as the chunks that were passed in.</summary>
+        public List<List<string>> Tags { get; set; } = new();
     }
 }

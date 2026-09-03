@@ -39,8 +39,8 @@ Základná myšlienka: nasmeruj API na `.docx` alebo `.pdf` súbor a stane sa z 
                                                                         ▼
                                                           ┌──────────────────────┐
                                                           │ AiHelper (Claude)     │  topics pre dokument
-                                                          │ CreateTopicsAsync /   │  + tags pre chunk
-                                                          │ CreateTagsAsync       │
+                                                          │ CreateTopicsAndTags-  │  + tags pre chunk,
+                                                          │ Async                 │  jedno spoločné volanie
                                                           └──────────────────────┘
                                                                         │
                                                                         ▼
@@ -315,12 +315,11 @@ Aby toto fungovalo, identitu chunku priraďuje samotný parser, nie až fáza uk
 
 ## Ako funguje AI obohacovanie
 
-`AiHelper` ([`Services/AiHelper.cs`](ContextEngine.Api/Services/AiHelper.cs)) urobí pri uploade dokumentu dve volania Claude, obe s modelom `claude-opus-5` na úrovni `Effort.Low` (lacná klasifikačná úloha, na ktorú sa neoplatí väčší model ani väčšie reasoning effort), s JSON output schémou, ktorá obmedzuje tvar odpovede:
+`AiHelper` ([`Services/AiHelper.cs`](ContextEngine.Api/Services/AiHelper.cs)) urobí pri uploade dokumentu **jedno** volanie Claude, s modelom `claude-haiku-4-5-20251001` na úrovni `Effort.Low` (lacná klasifikačná úloha, na ktorú sa neoplatí väčší model ani väčšie reasoning effort), s JSON output schémou, ktorá obmedzuje tvar odpovede.
 
-1. **`CreateTopicsAsync`** — jedno volanie, dostane spojený text celého dokumentu, žiada 1–5 krátkych topics. Prompt vymenuje všetky topics, ktoré sa už niekde v systéme používajú (z `SearchService.GetSearchableOptionsAsync`) a inštruuje model, aby jedno z nich znovupoužil, ak sa naozaj hodí, a nový vymyslel len vtedy, keď žiadne existujúce naozaj nesedí — to bráni fragmentácii slovníka topics na takmer-duplicity naprieč dokumentmi (napr. "Fakturácia" vs. "Faktúry" vs. "Platby").
-2. **`CreateTagsAsync`** — jedno volanie, dostane každý chunk s indexom (`Chunk 0: ...`, `Chunk 1: ...`), aby mal model kontext celého dokumentu, žiada 1–5 tagov na chunk, viazaných späť podľa indexu. Rovnaká inštrukcia na znovupoužitie existujúcich hodnôt ako pri topics.
+`CreateTopicsAndTagsAsync` pošle dokument raz — každý chunk s indexom (`Chunk 0: ...`, `Chunk 1: ...`), aby mal model kontext celého dokumentu — a v tej istej odpovedi žiada oboje naraz: 1–5 krátkych topics pre celý dokument a 1–5 tagov na chunk, viazaných späť podľa indexu. Predtým to boli dve samostatné volania (jedno na topics, jedno na tags), pričom každé znova poslalo text dokumentu; zlúčením do jedného volania sa vstupné tokeny účtované za upload zhruba prepolia, keďže sa dokument prenesie len raz. Prompt vymenuje všetky topics/tags, ktoré sa už niekde v systéme používajú (z `SearchService.GetSearchableOptionsAsync`) a inštruuje model, aby jedno z nich znovupoužil, ak sa naozaj hodí, a nové vymyslel len vtedy, keď žiadne existujúce naozaj nesedí — to bráni fragmentácii slovníka topics/tags na takmer-duplicity naprieč dokumentmi (napr. "Fakturácia" vs. "Faktúry" vs. "Platby").
 
-Ak dokument nemá žiadny neprázdny obsah, obe volania sa preskočia a vrátia sa prázdne topics/tags — bez zbytočného API volania. `DocxParser`/`PdfParser` volajú tieto dve metódy postupne (najprv topics, potom tags) tesne predtým, než vrátia svoje rozparsované chunky; `DocumentService` počíta embeddingy až potom, keď sú topics/tags už priradené — a robí to pre všetky chunky súbežne (`Parallel.ForEachAsync`, s limitom na `Environment.ProcessorCount`), nie jeden po druhom, keďže embedding každého chunku závisí len od jeho vlastného textu. Pri dokumente so stovkami chunkov je to rozdiel medzi pár sekundami a niekoľkými minútami.
+Ak dokument nemá žiadny neprázdny obsah, volanie sa preskočí a vrátia sa prázdne topics/tags — bez zbytočného API volania. `DocxParser`/`PdfParser` volajú túto metódu tesne predtým, než vrátia svoje rozparsované chunky; `DocumentService` počíta embeddingy až potom, keď sú topics/tags už priradené — a robí to pre všetky chunky súbežne (`Parallel.ForEachAsync`, s limitom na `Environment.ProcessorCount`), nie jeden po druhom, keďže embedding každého chunku závisí len od jeho vlastného textu. Pri dokumente so stovkami chunkov je to rozdiel medzi pár sekundami a niekoľkými minútami.
 
 ## Ako funguje sémantické vyhľadávanie
 
