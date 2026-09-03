@@ -254,7 +254,7 @@ Poznámka: `embedding` **nie je** súčasťou odpovede — je to interný vstup 
 | `GET /api/chunks/by-topic/{topic}` | Chunky otagované `topic` (naprieč všetkými dokumentmi). | — | `200 OK` → `ChunkDto[]` (prázdne pole, ak žiadny nesedí — nie 404) |
 | `GET /api/chunks/by-tag/{tag}` | Chunky otagované `tag`. | — | `200 OK` → `ChunkDto[]` |
 | `GET /api/chunks/by-date-range?startDate=yyyy-MM-dd&endDate=yyyy-MM-dd` | Chunky vytvorené v danom rozsahu. | — | `200 OK` → `ChunkDto[]` |
-| `PUT /api/chunks/{chunkId}` | Nahradí `Content`, `Type`, `Order`, `Topics`, `Tags`, `Metadata` chunku; zároveň posunie `UpdatedAt`. | Body: `ChunkDto` | `200 OK` → aktualizovaný `ChunkDto`, alebo `404` |
+| `PUT /api/chunks/{chunkId}` | Nahradí `Content`, `Type`, `Order`, `Topics`, `Tags`, `Metadata` chunku, prepočíta jeho `Embedding` z nového `Content` (aby ho sémantické vyhľadávanie neradilo naďalej podľa starého textu) a posunie `UpdatedAt`. | Body: `ChunkDto` | `200 OK` → aktualizovaný `ChunkDto`, alebo `404` |
 | `DELETE /api/chunks/{chunkId}` | Zmaže chunk **a celý jeho podstrom** (kaskádovito, podľa self-referencie `Parent`/`Children`). | — | `204 No Content`, alebo `404` |
 
 > Momentálne neexistuje `POST /api/chunks` — chunky vznikajú výhradne ako vedľajší efekt `POST /api/documents`. Toto je zámer (zatiaľ neexistuje use case pre samostatné vytváranie chunku), nie prehliadnutie.
@@ -351,7 +351,7 @@ ContextEngine.Api/                    API projekt (net8.0, ASP.NET Core Web API)
     DocumentService.cs                Pipeline upload/parse/embed/persist; dopyty na úrovni dokumentu
     ChunkService.cs                   CRUD + filtrovanie jednotlivých chunkov
     SearchService.cs                  Filter + ranking cosine similarity
-    AiHelper.cs                       Volania Claude pre topics/tags
+    AiHelper.cs                       Volanie Claude pre topics/tags
     OnnxEmbeddingService.cs           Lokálny embedding + cosine similarity
     Interfaces/                       IDocumentService, IChunkService, ISearchService, IAiHelper, IEmbeddingService
 
@@ -394,7 +394,7 @@ ContextEngine.Api.Tests/              xUnit testovací projekt
 dotnet test ContextEngine.Api.sln
 ```
 
-107 testov, rozdelených na dva druhy:
+109 testov, rozdelených na dva druhy:
 
 - **Unit testy** (`ContextEngine.Api.Tests/Unit/`) — services, parsery a mappings testované izolovane s mockovanými závislosťami (Moq). Pokrývajú `ChunkService`, `DocumentService`, `SearchService`, `OnnxEmbeddingService`, `DocxParser`, `PdfParser`, `ChunkMappings` a `GlobalExceptionHandler`.
 - **API integračné testy** (`ContextEngine.Api.Tests/Api/`) — spúšťajú celú appku in-process cez `WebApplicationFactory<Program>` (pozri `ContextEngineApiFactory`), voči čerstvej dočasnej SQLite databáze pre každú testovaciu triedu, so skutočným `IAiHelper` nahradeným no-op `FakeAiHelper` (žiadne sieťové volania, na spustenie sady netreba API kľúč). Tieto testy defaultne aj obchádzajú autentifikáciu cez `TestAuthHandler` — falošnú schému, ktorá autentifikuje každý request ako fixného testovacieho používateľa — takže `ChunksControllerApiTests`, `DocumentsControllerApiTests` a `SearchControllerApiTests` sa môžu sústrediť čisto na business logiku namiesto plumbingu okolo tokenov.

@@ -255,7 +255,7 @@ Note: `embedding` is **not** included — it's internal ranking input, not clien
 | `GET /api/chunks/by-topic/{topic}` | Chunks tagged with `topic` (across all documents). | — | `200 OK` → `ChunkDto[]` (empty array if none match — no 404) |
 | `GET /api/chunks/by-tag/{tag}` | Chunks tagged with `tag`. | — | `200 OK` → `ChunkDto[]` |
 | `GET /api/chunks/by-date-range?startDate=yyyy-MM-dd&endDate=yyyy-MM-dd` | Chunks created in the given range. | — | `200 OK` → `ChunkDto[]` |
-| `PUT /api/chunks/{chunkId}` | Replaces a chunk's `Content`, `Type`, `Order`, `Topics`, `Tags`, `Metadata` in place; also bumps `UpdatedAt`. | Body: `ChunkDto` | `200 OK` → updated `ChunkDto`, or `404` |
+| `PUT /api/chunks/{chunkId}` | Replaces a chunk's `Content`, `Type`, `Order`, `Topics`, `Tags`, `Metadata` in place, recomputes its `Embedding` from the new `Content` (so semantic search doesn't keep ranking it by stale text), and bumps `UpdatedAt`. | Body: `ChunkDto` | `200 OK` → updated `ChunkDto`, or `404` |
 | `DELETE /api/chunks/{chunkId}` | Deletes a chunk **and its whole sub-tree** (cascade, per the `Parent`/`Children` self-reference). | — | `204 No Content`, or `404` |
 
 > There's currently no `POST /api/chunks` — chunks are only ever created as a side effect of `POST /api/documents`. This is intentional today (no standalone-chunk-creation use case yet), not an oversight to route around.
@@ -352,7 +352,7 @@ ContextEngine.Api/                    API project (net8.0, ASP.NET Core Web API)
     DocumentService.cs                Upload/parse/embed/persist pipeline; document-level queries
     ChunkService.cs                   CRUD + filtering on individual chunks
     SearchService.cs                  Filter + cosine-similarity ranking
-    AiHelper.cs                       Claude calls for topics/tags
+    AiHelper.cs                       Claude call for topics/tags
     OnnxEmbeddingService.cs           Local embedding + cosine similarity
     Interfaces/                       IDocumentService, IChunkService, ISearchService, IAiHelper, IEmbeddingService
 
@@ -395,7 +395,7 @@ ContextEngine.Api.Tests/              xUnit test project
 dotnet test ContextEngine.Api.sln
 ```
 
-107 tests, split into two kinds:
+109 tests, split into two kinds:
 
 - **Unit tests** (`ContextEngine.Api.Tests/Unit/`) — services, parsers and mappings tested in isolation with mocked dependencies (Moq). Cover `ChunkService`, `DocumentService`, `SearchService`, `OnnxEmbeddingService`, `DocxParser`, `PdfParser`, `ChunkMappings`, and `GlobalExceptionHandler`.
 - **API integration tests** (`ContextEngine.Api.Tests/Api/`) — boot the whole app in-process via `WebApplicationFactory<Program>` (see `ContextEngineApiFactory`), against a fresh temp-file SQLite database per test class, with the real `IAiHelper` swapped for a no-op `FakeAiHelper` (no network calls, no API key needed to run the suite). By default these tests also bypass authentication via `TestAuthHandler` — a fake scheme that authenticates every request as a fixed test user — so `ChunksControllerApiTests`, `DocumentsControllerApiTests` and `SearchControllerApiTests` can focus purely on business-logic behavior instead of token plumbing.
