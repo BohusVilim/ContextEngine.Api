@@ -14,11 +14,9 @@ namespace ContextEngine.Api.Controllers
     [Route("api/search")]
     public class SearchController : ControllerBase
     {
-        private readonly ILogger<SearchController> _logger;
         private readonly ISearchService _searchService;
-        public SearchController(ILogger<SearchController> logger, ISearchService searchService)
+        public SearchController(ISearchService searchService)
         {
-            _logger = logger;
             _searchService = searchService;
         }
 

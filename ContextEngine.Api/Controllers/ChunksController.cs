@@ -13,11 +13,9 @@ namespace ContextEngine.Api.Controllers
     [Route("api/chunks")]
     public class ChunksController : ControllerBase
     {
-        private readonly ILogger<ChunksController> _logger;
         private readonly IChunkService _chunkService;
-        public ChunksController(ILogger<ChunksController> logger, IChunkService chunkService)
+        public ChunksController(IChunkService chunkService)
         {
-            _logger = logger;
             _chunkService = chunkService;
         }
 

@@ -11,7 +11,7 @@ namespace ContextEngine.Api.Services
     public class AiHelper : IAiHelper
     {
         /// <summary>Model used for topic/tag generation. Cheap classification task, not worth a larger model.</summary>
-        private const string ModelId = "claude-opus-5";
+        private const string ModelId = "claude-haiku-4-5-20251001";
 
         private const int TopicsMaxTokens = 1024;
         private const int TagsMaxTokens = 4096;

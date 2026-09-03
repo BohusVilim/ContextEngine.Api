@@ -135,8 +135,11 @@ namespace ContextEngine.Api.Services
         /// <inheritdoc/>
         public async Task<List<Guid>> GetDocumentIdsByDateRangeAsync(DateTime startDate, DateTime endDate, CancellationToken cancellationToken = default)
         {
-            var start = new DateTimeOffset(DateTime.SpecifyKind(startDate, DateTimeKind.Utc));
-            var end = new DateTimeOffset(DateTime.SpecifyKind(endDate, DateTimeKind.Utc));
+            // Callers pass a bare date (see the by-date-range endpoint's "yyyy-MM-dd" docs). Using
+            // endDate's own midnight as the upper bound would make "inclusive" exclude almost the
+            // entire end date, so the range is extended through the end of that day instead.
+            var start = new DateTimeOffset(DateTime.SpecifyKind(startDate.Date, DateTimeKind.Utc));
+            var end = new DateTimeOffset(DateTime.SpecifyKind(endDate.Date, DateTimeKind.Utc)).AddDays(1).AddTicks(-1);
 
             // SQLite has no native DateTimeOffset type, so EF Core's Sqlite provider can't translate
             // a DateTimeOffset comparison into SQL; every chunk has to be loaded and checked in memory.

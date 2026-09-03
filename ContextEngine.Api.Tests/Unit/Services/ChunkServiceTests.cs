@@ -3,12 +3,22 @@ using ContextEngine.Api.Data;
 using ContextEngine.Api.DTOs;
 using ContextEngine.Api.Mappings;
 using ContextEngine.Api.Services;
+using ContextEngine.Api.Services.Interfaces;
+using ContextEngine.Api.Tests.TestHelpers;
 using static ContextEngine.Api.Enums;
 
 namespace ContextEngine.Api.Tests.Unit.Services
 {
+    [Collection(EmbeddingModelCollection.Name)]
     public class ChunkServiceTests
     {
+        private readonly IEmbeddingService _embeddingService;
+
+        public ChunkServiceTests(EmbeddingServiceFixture embeddingServiceFixture)
+        {
+            _embeddingService = embeddingServiceFixture.EmbeddingService;
+        }
+
         private static ContextEngineDbContext CreateInMemoryContext()
         {
             var options = new DbContextOptionsBuilder<ContextEngineDbContext>()
@@ -27,7 +37,7 @@ namespace ContextEngine.Api.Tests.Unit.Services
             context.Chunks.Add(new Models.Chunk.Chunk { Id = chunkId, Type = ChunkType.Paragraph, Content = "Body text" });
             await context.SaveChangesAsync();
 
-            var service = new ChunkService(context, new ChunkMappings());
+            var service = new ChunkService(context, new ChunkMappings(), _embeddingService);
 
             var chunk = await service.GetChunkByIdAsync(chunkId);
 
@@ -40,7 +50,7 @@ namespace ContextEngine.Api.Tests.Unit.Services
         public async Task GetChunkByIdAsync_ChunkDoesNotExist_ReturnsNull()
         {
             using var context = CreateInMemoryContext();
-            var service = new ChunkService(context, new ChunkMappings());
+            var service = new ChunkService(context, new ChunkMappings(), _embeddingService);
 
             var chunk = await service.GetChunkByIdAsync(Guid.NewGuid());
 
@@ -59,7 +69,7 @@ namespace ContextEngine.Api.Tests.Unit.Services
                 new Models.Chunk.Chunk { Id = Guid.NewGuid(), SourceId = Guid.NewGuid(), Type = ChunkType.Heading, Order = 0, Content = "OtherDocument" });
             await context.SaveChangesAsync();
 
-            var service = new ChunkService(context, new ChunkMappings());
+            var service = new ChunkService(context, new ChunkMappings(), _embeddingService);
 
             var chunks = await service.GetChunksByDocumentIdAsync(sourceId);
 
@@ -74,7 +84,7 @@ namespace ContextEngine.Api.Tests.Unit.Services
         public async Task GetChunksByDocumentIdAsync_DocumentDoesNotExist_ReturnsNull()
         {
             using var context = CreateInMemoryContext();
-            var service = new ChunkService(context, new ChunkMappings());
+            var service = new ChunkService(context, new ChunkMappings(), _embeddingService);
 
             var chunks = await service.GetChunksByDocumentIdAsync(Guid.NewGuid());
 
@@ -92,7 +102,7 @@ namespace ContextEngine.Api.Tests.Unit.Services
                 new Models.Chunk.Chunk { Id = Guid.NewGuid(), Type = ChunkType.Paragraph, Topics = new List<string> { "other" } });
             await context.SaveChangesAsync();
 
-            var service = new ChunkService(context, new ChunkMappings());
+            var service = new ChunkService(context, new ChunkMappings(), _embeddingService);
 
             var chunks = await service.GetChunksByTopicAsync("billing");
 
@@ -104,7 +114,7 @@ namespace ContextEngine.Api.Tests.Unit.Services
         public async Task GetChunksByTopicAsync_NoMatch_ReturnsEmptyList()
         {
             using var context = CreateInMemoryContext();
-            var service = new ChunkService(context, new ChunkMappings());
+            var service = new ChunkService(context, new ChunkMappings(), _embeddingService);
 
             var chunks = await service.GetChunksByTopicAsync("billing");
 
@@ -122,7 +132,7 @@ namespace ContextEngine.Api.Tests.Unit.Services
                 new Models.Chunk.Chunk { Id = Guid.NewGuid(), Type = ChunkType.Paragraph, Tags = new List<string> { "other" } });
             await context.SaveChangesAsync();
 
-            var service = new ChunkService(context, new ChunkMappings());
+            var service = new ChunkService(context, new ChunkMappings(), _embeddingService);
 
             var chunks = await service.GetChunksByTagAsync("urgent");
 
@@ -134,7 +144,7 @@ namespace ContextEngine.Api.Tests.Unit.Services
         public async Task GetChunksByTagAsync_NoMatch_ReturnsEmptyList()
         {
             using var context = CreateInMemoryContext();
-            var service = new ChunkService(context, new ChunkMappings());
+            var service = new ChunkService(context, new ChunkMappings(), _embeddingService);
 
             var chunks = await service.GetChunksByTagAsync("urgent");
 
@@ -152,7 +162,7 @@ namespace ContextEngine.Api.Tests.Unit.Services
                 new Models.Chunk.Chunk { Id = Guid.NewGuid(), Type = ChunkType.Heading, CreatedAt = new DateTimeOffset(2026, 3, 1, 0, 0, 0, TimeSpan.Zero) });
             await context.SaveChangesAsync();
 
-            var service = new ChunkService(context, new ChunkMappings());
+            var service = new ChunkService(context, new ChunkMappings(), _embeddingService);
 
             var chunks = await service.GetChunksByDateRangeAsync(new DateTime(2026, 1, 1), new DateTime(2026, 1, 31));
 
@@ -161,10 +171,32 @@ namespace ContextEngine.Api.Tests.Unit.Services
         }
 
         [Fact]
+        public async Task GetChunksByDateRangeAsync_ChunkCreatedLaterOnEndDate_IsIncluded()
+        {
+            using var context = CreateInMemoryContext();
+            var lateOnEndDateId = Guid.NewGuid();
+
+            context.Chunks.Add(new Models.Chunk.Chunk
+            {
+                Id = lateOnEndDateId,
+                Type = ChunkType.Heading,
+                CreatedAt = new DateTimeOffset(2026, 1, 31, 23, 0, 0, TimeSpan.Zero)
+            });
+            await context.SaveChangesAsync();
+
+            var service = new ChunkService(context, new ChunkMappings(), _embeddingService);
+
+            var chunks = await service.GetChunksByDateRangeAsync(new DateTime(2026, 1, 1), new DateTime(2026, 1, 31));
+
+            var chunk = Assert.Single(chunks);
+            Assert.Equal(lateOnEndDateId, chunk.Id);
+        }
+
+        [Fact]
         public async Task GetChunksByDateRangeAsync_NoMatch_ReturnsEmptyList()
         {
             using var context = CreateInMemoryContext();
-            var service = new ChunkService(context, new ChunkMappings());
+            var service = new ChunkService(context, new ChunkMappings(), _embeddingService);
 
             var chunks = await service.GetChunksByDateRangeAsync(new DateTime(1999, 1, 1), new DateTime(1999, 1, 2));
 
@@ -189,7 +221,7 @@ namespace ContextEngine.Api.Tests.Unit.Services
             });
             await context.SaveChangesAsync();
 
-            var service = new ChunkService(context, new ChunkMappings());
+            var service = new ChunkService(context, new ChunkMappings(), _embeddingService);
 
             var updated = await service.UpdateChunkAsync(chunkId, new ChunkDto
             {
@@ -215,10 +247,34 @@ namespace ContextEngine.Api.Tests.Unit.Services
         }
 
         [Fact]
+        public async Task UpdateChunkAsync_ContentChanges_RecomputesEmbedding()
+        {
+            using var context = CreateInMemoryContext();
+            var chunkId = Guid.NewGuid();
+            var staleEmbedding = new float[OnnxEmbeddingService.Dimensions];
+
+            context.Chunks.Add(new Models.Chunk.Chunk
+            {
+                Id = chunkId,
+                Type = ChunkType.Paragraph,
+                Content = "Old content",
+                Embedding = staleEmbedding
+            });
+            await context.SaveChangesAsync();
+
+            var service = new ChunkService(context, new ChunkMappings(), _embeddingService);
+
+            await service.UpdateChunkAsync(chunkId, new ChunkDto { Content = "New content" });
+
+            var persisted = await context.Chunks.SingleAsync(c => c.Id == chunkId);
+            Assert.NotEqual(staleEmbedding, persisted.Embedding);
+        }
+
+        [Fact]
         public async Task UpdateChunkAsync_ChunkDoesNotExist_ReturnsNull()
         {
             using var context = CreateInMemoryContext();
-            var service = new ChunkService(context, new ChunkMappings());
+            var service = new ChunkService(context, new ChunkMappings(), _embeddingService);
 
             var updated = await service.UpdateChunkAsync(Guid.NewGuid(), new ChunkDto { Content = "New content" });
 
@@ -237,7 +293,7 @@ namespace ContextEngine.Api.Tests.Unit.Services
                 new Models.Chunk.Chunk { Id = otherChunkId, Type = ChunkType.Paragraph });
             await context.SaveChangesAsync();
 
-            var service = new ChunkService(context, new ChunkMappings());
+            var service = new ChunkService(context, new ChunkMappings(), _embeddingService);
 
             var deleted = await service.DeleteChunkAsync(chunkId);
 
@@ -251,7 +307,7 @@ namespace ContextEngine.Api.Tests.Unit.Services
         public async Task DeleteChunkAsync_ChunkDoesNotExist_ReturnsFalse()
         {
             using var context = CreateInMemoryContext();
-            var service = new ChunkService(context, new ChunkMappings());
+            var service = new ChunkService(context, new ChunkMappings(), _embeddingService);
 
             var deleted = await service.DeleteChunkAsync(Guid.NewGuid());
 
