@@ -13,9 +13,11 @@ namespace ContextEngine.Api.Controllers
     [Route("api/documents")]
     public class DocumentsController : ControllerBase
     {
+        private readonly ILogger<DocumentsController> _logger;
         private readonly IDocumentService _documentService;
-        public DocumentsController(IDocumentService documentService)
+        public DocumentsController(ILogger<DocumentsController> logger, IDocumentService documentService)
         {
+            _logger = logger;
             _documentService = documentService;
         }
 
@@ -27,7 +29,11 @@ namespace ContextEngine.Api.Controllers
         [ProducesResponseType<Guid>(StatusCodes.Status200OK)]
         public async Task<IActionResult> UploadDocument(string documentPath, CancellationToken cancellationToken)
         {
+            _logger.LogInformation("Uploading document from {DocumentPath}", documentPath);
+
             var sourceId = await _documentService.UploadDocumentAsync(documentPath, cancellationToken);
+
+            _logger.LogInformation("Uploaded document {DocumentPath} as source {SourceId}", documentPath, sourceId);
             return Ok(sourceId);
         }
 
@@ -44,6 +50,7 @@ namespace ContextEngine.Api.Controllers
 
             if (chunks == null)
             {
+                _logger.LogWarning("Document {DocumentId} not found", documentId);
                 return NotFound();
             }
 
@@ -96,9 +103,11 @@ namespace ContextEngine.Api.Controllers
 
             if (!deleted)
             {
+                _logger.LogWarning("Attempted to delete non-existent document {DocumentId}", documentId);
                 return NotFound();
             }
 
+            _logger.LogInformation("Deleted document {DocumentId}", documentId);
             return NoContent();
         }
     }

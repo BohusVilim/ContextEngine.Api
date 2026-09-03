@@ -13,9 +13,11 @@ namespace ContextEngine.Api.Controllers
     [Route("api/chunks")]
     public class ChunksController : ControllerBase
     {
+        private readonly ILogger<ChunksController> _logger;
         private readonly IChunkService _chunkService;
-        public ChunksController(IChunkService chunkService)
+        public ChunksController(ILogger<ChunksController> logger, IChunkService chunkService)
         {
+            _logger = logger;
             _chunkService = chunkService;
         }
 
@@ -31,6 +33,7 @@ namespace ContextEngine.Api.Controllers
 
             if (chunk == null)
             {
+                _logger.LogWarning("Chunk {ChunkId} not found", chunkId);
                 return NotFound();
             }
 
@@ -49,6 +52,7 @@ namespace ContextEngine.Api.Controllers
 
             if (chunks == null)
             {
+                _logger.LogWarning("No chunks found for document {DocumentId}", documentId);
                 return NotFound();
             }
 
@@ -102,9 +106,11 @@ namespace ContextEngine.Api.Controllers
 
             if (chunk == null)
             {
+                _logger.LogWarning("Attempted to update non-existent chunk {ChunkId}", chunkId);
                 return NotFound();
             }
 
+            _logger.LogInformation("Updated chunk {ChunkId}", chunkId);
             return Ok(chunk);
         }
 
@@ -120,9 +126,11 @@ namespace ContextEngine.Api.Controllers
 
             if (!deleted)
             {
+                _logger.LogWarning("Attempted to delete non-existent chunk {ChunkId}", chunkId);
                 return NotFound();
             }
 
+            _logger.LogInformation("Deleted chunk {ChunkId}", chunkId);
             return NoContent();
         }
 

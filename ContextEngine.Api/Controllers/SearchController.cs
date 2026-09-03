@@ -14,9 +14,11 @@ namespace ContextEngine.Api.Controllers
     [Route("api/search")]
     public class SearchController : ControllerBase
     {
+        private readonly ILogger<SearchController> _logger;
         private readonly ISearchService _searchService;
-        public SearchController(ISearchService searchService)
+        public SearchController(ILogger<SearchController> logger, ISearchService searchService)
         {
+            _logger = logger;
             _searchService = searchService;
         }
 
@@ -28,6 +30,11 @@ namespace ContextEngine.Api.Controllers
         public async Task<IActionResult> Search([FromBody] SearchRequest searchRequest, CancellationToken cancellationToken)
         {
             var response = await _searchService.SearchAsync(searchRequest, cancellationToken);
+
+            _logger.LogInformation(
+                "Search for {Query} with {TypeCount} types, {TopicCount} topics, {TagCount} tags returned {ResultCount} chunks",
+                searchRequest.Query, searchRequest.Types?.Count ?? 0, searchRequest.Topics.Count, searchRequest.Tags.Count, response.Chunks.Count);
+
             return Ok(response);
         }
 
